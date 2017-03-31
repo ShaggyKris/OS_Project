@@ -23,7 +23,7 @@ typedef struct{
   FILE* file;
   int remainingB;
   int quantum;
-
+  int notFin;//forRR
 }RCB;
 
 //RCB table 
@@ -92,7 +92,7 @@ static void serve_client( int fd ) {
       newRCB->remainingB = sz;
       newRCB->quantum=4028;
       newRCB->file=fin;
-      
+      newRCB->notFin=0;//not finished 
       //add to rcb table 
       rcbTable[globalCounter-1]=newRCB;
 
@@ -174,36 +174,44 @@ int runRR(){
 	buffer = malloc( MAX_HTTP_SIZE );
 	int i=0;
 	int k,end=0;
+	int fin=0;
 	RCB *element;
 	for (i=0;i<globalCounter;i++){
 		//check if the job is finished 
-		if(rcbTable[i]->remainingB <= 0)
+		if(rcbTable[i]->notFin == 1)
 			continue;
 		
-		do {                                          /* loop, read & send file */
     		len = fread( buffer, 1, MAX_HTTP_SIZE, rcbTable[i]->file );  /* read file chunk */
     		if( len < 0 ) {                             /* check for errors */
         		 perror( "Error while writing to client" );
     		} else if( len > 0 ) {                      /* if none, send chunk */
-    		  len = write( rcbTable[i]->clientfd, buffer, len );
     		  rcbTable[i]->remainingB=rcbTable[i]->remainingB - len;
+    		  len = write( rcbTable[i]->clientfd, buffer, len );
+
     		  if( len < 1 ) {                           /* check for errors */
         		perror( "Error while writing to client" );
       		}
     		}
-  		} while(len==MAX_HTTP_SIZE);              /* the last chunk < 8192 */
+
 		 if(rcbTable[i]->remainingB <= 0){
-		 	fclose( rcbTable[i]->file );
- 		 	close(rcbTable[i]->clientfd);
+		 	rcbTable[i]->notFin=1;
  		 }else
- 		 	end++;
- 		 	
- 		 if(i==globalCounter-1 && end > 0){
+ 		 	end=1;
+
+ 		 
+ 		 if(i==globalCounter-1 && end ==1 ){
+
  		 	i=0;
  		 	end=0;
  		 }
 	}
+	for (i=0;i<globalCounter;i++){
+		fclose( rcbTable[i]->file );
+ 		close(rcbTable[i]->clientfd);
+	}
 	globalCounter=0;
+
+	return 0;
 }
 	
 
