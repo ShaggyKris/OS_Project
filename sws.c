@@ -15,7 +15,7 @@
 #include "network.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
-
+#define TIME_QUANTUM 4096
 
 typedef struct{
   int seq;
@@ -90,7 +90,7 @@ static void serve_client( int fd ) {
       int sz = ftell(fin);
       rewind(fin);
       newRCB->remainingB = sz;
-      newRCB->quantum=sz;
+      newRCB->quantum=4028;
       newRCB->file=fin;
       
       //add to rcb table 
@@ -164,6 +164,47 @@ int procSJF(RCB *element){
   
   return 0;
 }
+
+
+
+int runRR(){
+	//Run in arrival order until it goes over the quantum
+	static char *buffer;
+	int len;
+	buffer = malloc( MAX_HTTP_SIZE );
+	int i=0;
+	int k,end=0;
+	RCB *element;
+	for (i=0;i<globalCounter;i++){
+		//check if the job is finished 
+		if(rcbTable[i]->remainingB <= 0)
+			continue;
+		
+		do {                                          /* loop, read & send file */
+    		len = fread( buffer, 1, MAX_HTTP_SIZE, rcbTable[i]->file );  /* read file chunk */
+    		if( len < 0 ) {                             /* check for errors */
+        		 perror( "Error while writing to client" );
+    		} else if( len > 0 ) {                      /* if none, send chunk */
+    		  len = write( rcbTable[i]->clientfd, buffer, len );
+    		  rcbTable[i]->remainingB=rcbTable[i]->remainingB - len;
+    		  if( len < 1 ) {                           /* check for errors */
+        		perror( "Error while writing to client" );
+      		}
+    		}
+  		} while(len==MAX_HTTP_SIZE);              /* the last chunk < 8192 */
+		 if(rcbTable[i]->remainingB <= 0){
+		 	fclose( rcbTable[i]->file );
+ 		 	close(rcbTable[i]->clientfd);
+ 		 }else
+ 		 	end++;
+ 		 	
+ 		 if(i==globalCounter-1 && end > 0){
+ 		 	i=0;
+ 		 	end=0;
+ 		 }
+	}
+	globalCounter=0;
+}
 	
 
 /* This function is where the program starts running.
@@ -184,8 +225,10 @@ int main( int argc, char **argv ) {
 	
   /* check for and process parameters 
    */
-  if( ( argc < 2 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ) {
-    printf( "usage: sms <port>\n" );
+   if( ( argc < 3 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ||
+      ( strcmp(argv[2], "SJF") != 0 && strcmp(argv[2], "RR") != 0 &&
+	strcmp(argv[2], "MLFB"))){
+    printf( "usage: sms <port> <scheduler>\n" );
     return 0;
   }
 
@@ -198,9 +241,11 @@ int main( int argc, char **argv ) {
       serve_client( fd );                           /* process each client */
      
     }
-   
+   if( strcmp(argv[2], "SJF") == 0)
+   	runSJF();
+   else if(strcmp(argv[2], "RR")==0)
     //function to perform SJF
-    runSJF();
+    runRR();
 
   }
 }
