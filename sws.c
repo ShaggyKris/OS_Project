@@ -246,8 +246,10 @@ RCB* proc8KB(RCB *element){
  		close(element->clientfd);
  		printf("REQUEST %d FINISHED IN 8KB QUEUE\n",element->seq);
  		fflush(stdout);
+ 		return element;
  		}
-   	 
+   	 printf("REQUEST %d WAS ONCE IN 8KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
+ fflush(stdout);
 
  return element;
 }
@@ -283,36 +285,12 @@ RCB* proc64KB(RCB *element){
  		return element;
  }
  }
- printf("REQUEST %d WAS ONCE IN 64KB QUEUE\n",element->seq);
+ printf("REQUEST %d WAS ONCE IN 64KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
  fflush(stdout);
  return element;
 }
-int procRest(RCB *element){
-    static char *buffer;
-	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
-	int end=0;
-	     
-do {                                          /* loop, read & send file */
-    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
-    if( len < 0 ) {                             /* check for errors */
-         perror( "Error while writing to client" );
-    } else if( len > 0 ) {                      /* if none, send chunk */
-      len = write( element->clientfd, buffer, len );
-      if( len < 1 ) {                           /* check for errors */
-        perror( "Error while writing to client" );
-      }
-    }
-  } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
 
-	fclose( element->file );
- 	close(element->clientfd);
- 	printf("REQUEST %d FINISHED IN FINAL QUEUE\n",element->seq);
- 	fflush(stdout);
- 
- return 0;
 
-}
 int runMLFB(){
 	//Run in arrival order until it goes over the quantum
 
