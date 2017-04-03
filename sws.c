@@ -193,10 +193,12 @@ int procRR(RCB* element){
  		close(element->clientfd);
  		printf("REQUEST %d FINISHED(RR)\n",element->seq);
  		fflush(stdout);
+ 		return end;
  }
- 		 
+ printf("REQUEST %d SENT BACK TO QUEUE(RR) Rem %d\n",element->seq,element->remainingB);
+ 		fflush(stdout);
   
-  return end;
+  return 0;
 }
 
 
@@ -320,11 +322,11 @@ int runMLFB(){
 	}
 	//for the rest 
 	do{
-	for (i=0;i<remElements;i++){
+	  for (i=0;i<remElements;i++){
 		//process request if it is not completed yet 
-		if(KB64[i]->notFin==0)
-			end+=procRR(KB64[i]);
-		}
+		if(Remainder[i]->notFin==0)
+			end+=procRR(Remainder[i]);
+	  }
 	}while(end<remElements);
 	
 	
