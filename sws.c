@@ -319,10 +319,6 @@ int runMLFB(){
 		}
 	}
 	//for the rest 
-	for (i=0;i<remElements;i++){
-		element=procRR(KB64[i]);
-		
-	}
 	do{
 	for (i=0;i<remElements;i++){
 		//process request if it is not completed yet 
