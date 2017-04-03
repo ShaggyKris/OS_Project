@@ -15,7 +15,6 @@
 #include "network.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
-#define TIME_QUANTUM 4096
 
 typedef struct{
   int seq;
@@ -165,50 +164,52 @@ int procSJF(RCB *element){
   return 0;
 }
 
+int procRR(RCB* element){
+	static char *buffer;
+	int len;
+	buffer = malloc( MAX_HTTP_SIZE );
+	int end=0;
+	     
+
+    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
+    if( len < 0 ) {                             /* check for errors */
+         perror( "Error while writing to client" );
+    } else if( len > 0 ) {                      /* if none, send chunk */
+      len = write( element->clientfd, buffer, len );
+      element->remainingB=element->remainingB-len;
+      if( len < 1 ) {                           /* check for errors */
+        perror( "Error while writing to client" );
+      }
+    }
+//if requested is finished 
+  if(element->remainingB <= 0){
+		end=1;
+		element->notFin=1;
+		fclose( element->file );
+ 		close(element->clientfd);
+ }
+ 		 
+  
+  return end;
+}
+
 
 
 int runRR(){
 	//Run in arrival order until it goes over the quantum
-	static char *buffer;
-	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
+
 	int i=0;
 	int k,end=0;
 	int fin=0;
-	RCB *element;
+	//loop through the array of table until all process finishes 
+	do{
 	for (i=0;i<globalCounter;i++){
-		//check if the job is finished 
-		if(rcbTable[i]->notFin == 1)
-			continue;
-		
-    		len = fread( buffer, 1, MAX_HTTP_SIZE, rcbTable[i]->file );  /* read file chunk */
-    		if( len < 0 ) {                             /* check for errors */
-        		 perror( "Error while writing to client" );
-    		} else if( len > 0 ) {                      /* if none, send chunk */
-    		  rcbTable[i]->remainingB=rcbTable[i]->remainingB - len;
-    		  len = write( rcbTable[i]->clientfd, buffer, len );
-
-    		  if( len < 1 ) {                           /* check for errors */
-        		perror( "Error while writing to client" );
-      		}
-    		}
-
-		 if(rcbTable[i]->remainingB <= 0){
-		 	rcbTable[i]->notFin=1;
- 		 }else
- 		 	end=1;
-
- 		 
- 		 if(i==globalCounter-1 && end ==1 ){
-
- 		 	i=0;
- 		 	end=0;
- 		 }
-	}
-	for (i=0;i<globalCounter;i++){
-		fclose( rcbTable[i]->file );
- 		close(rcbTable[i]->clientfd);
-	}
+		//process request if it is not completed yet 
+		if(rcbTable[i]->notFin==0)
+			end+=procRR(rcbTable[i]);
+		}
+	}while(end<globalCounter);
+	
 	globalCounter=0;
 
 	return 0;
@@ -229,7 +230,7 @@ int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
 	
-	
+	globalCounter=0;
 	
   /* check for and process parameters 
    */
@@ -252,7 +253,6 @@ int main( int argc, char **argv ) {
    if( strcmp(argv[2], "SJF") == 0)
    	runSJF();
    else if(strcmp(argv[2], "RR")==0)
-    //function to perform SJF
     runRR();
 
   }
