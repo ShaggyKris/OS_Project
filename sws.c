@@ -83,7 +83,7 @@ static void serve_client( int fd ) {
 			len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
 			write( fd, buffer,len );
 			/*Initializes the RCB*/
-			newRCB->seq = globalCounter++;
+			newRCB->seq = ++globalCounter;
       newRCB->clientfd = fd;
       fseek(fin, 0L, SEEK_END);
       int sz = ftell(fin);
@@ -164,6 +164,10 @@ int procSJF(RCB *element){
   return 0;
 }
 
+/*
+* Function To process the request in RR queue
+*/
+
 int procRR(RCB* element){
 	static char *buffer;
 	int len;
@@ -187,6 +191,8 @@ int procRR(RCB* element){
 		element->notFin=1;
 		fclose( element->file );
  		close(element->clientfd);
+ 		printf("REQUEST %d FINISHED(RR)\n",element->seq);
+ 		fflush(stdout);
  }
  		 
   
@@ -194,7 +200,7 @@ int procRR(RCB* element){
 }
 
 
-
+//function to run RR
 int runRR(){
 	//Run in arrival order until it goes over the quantum
 
@@ -209,6 +215,144 @@ int runRR(){
 			end+=procRR(rcbTable[i]);
 		}
 	}while(end<globalCounter);
+	
+	globalCounter=0;
+
+	return 0;
+}
+
+RCB* proc8KB(RCB *element){
+	static char *buffer;
+	int len;
+	buffer = malloc( MAX_HTTP_SIZE );
+	int i=0;	     
+	
+
+    	len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
+    	if( len < 0 ) {                             /* check for errors */
+    	     perror( "Error while writing to client" );
+    	} else if( len > 0 ) {                      /* if none, send chunk */
+    	  len = write( element->clientfd, buffer, len );
+    	  
+    	  element->remainingB=element->remainingB-len;
+    	  if( len < 1 ) {                           /* check for errors */
+    	    perror( "Error while writing to client" );
+    	  }
+    	 }
+    	//if requested is finished 
+ 	 if(element->remainingB <= 0){
+		element->notFin=1;
+		fclose( element->file );
+ 		close(element->clientfd);
+ 		printf("REQUEST %d FINISHED IN 8KB QUEUE\n",element->seq);
+ 		fflush(stdout);
+ 		}
+   	 
+
+ return element;
+}
+
+RCB* proc64KB(RCB *element){
+	static char *buffer;
+	int len;
+	buffer = malloc( MAX_HTTP_SIZE );
+	int end=0;
+	int i;
+	     
+	for(i=0;i<8;i++){
+    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
+    if( len < 0 ) {                             /* check for errors */
+         perror( "Error while writing to client" );
+    } else if( len > 0 ) {                      /* if none, send chunk */
+      len = write( element->clientfd, buffer, len );
+      
+      element->remainingB=element->remainingB-len;
+      if( len < 1 ) {                           /* check for errors */
+        perror( "Error while writing to client" );
+      }
+    }
+   
+//if requested is finished 
+  if(element->remainingB <= 0){
+		end=1;
+		element->notFin=1;
+		fclose( element->file );
+ 		close(element->clientfd);
+ 		printf("REQUEST %d FINISHED IN 64KB QUEUE\n",element->seq);
+ 		fflush(stdout);
+ 		return element;
+ }
+ }
+ printf("REQUEST %d WAS ONCE IN 64KB QUEUE\n",element->seq);
+ fflush(stdout);
+ return element;
+}
+int procRest(RCB *element){
+    static char *buffer;
+	int len;
+	buffer = malloc( MAX_HTTP_SIZE );
+	int end=0;
+	     
+do {                                          /* loop, read & send file */
+    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
+    if( len < 0 ) {                             /* check for errors */
+         perror( "Error while writing to client" );
+    } else if( len > 0 ) {                      /* if none, send chunk */
+      len = write( element->clientfd, buffer, len );
+      if( len < 1 ) {                           /* check for errors */
+        perror( "Error while writing to client" );
+      }
+    }
+  } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+
+	fclose( element->file );
+ 	close(element->clientfd);
+ 	printf("REQUEST %d FINISHED IN FINAL QUEUE\n",element->seq);
+ 	fflush(stdout);
+ 
+ return 0;
+
+}
+int runMLFB(){
+	//Run in arrival order until it goes over the quantum
+
+	int i=0;
+	int end=0;
+	int elements64=0;
+	int remElements=0;
+	RCB *KB64[64];
+	RCB *Remainder[64];
+	RCB *element;
+	//loop through the array of table until all process finishes 
+	
+	for (i=0;i<globalCounter;i++){
+		element=proc8KB(rcbTable[i]);
+		if(element->notFin==0){
+			KB64[elements64]=element;
+			elements64++;
+		}
+	}
+	//for 64kb elements
+	for (i=0;i<elements64;i++){
+		element=proc64KB(KB64[i]);
+		if(element->notFin==0){
+			Remainder[remElements]=element;
+			remElements++;
+		}
+	}
+	//for the rest 
+	for (i=0;i<remElements;i++){
+		element=procRR(KB64[i]);
+		
+	}
+	do{
+	for (i=0;i<remElements;i++){
+		//process request if it is not completed yet 
+		if(KB64[i]->notFin==0)
+			end+=procRR(KB64[i]);
+		}
+	}while(end<remElements);
+	
 	
 	globalCounter=0;
 
@@ -254,6 +398,8 @@ int main( int argc, char **argv ) {
    	runSJF();
    else if(strcmp(argv[2], "RR")==0)
     runRR();
+   else
+   	runMLFB();
 
   }
 }
