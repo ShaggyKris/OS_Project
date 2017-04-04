@@ -1,17 +1,6 @@
 38080
-<<<<<<< HEAD
 0.0 0.5 empty.txt
 0.0 1 empty2.txt
 0 2 empty3.txt
 0 3 empty4.txt
 0 4 empty5.txt
-=======
-0.0 1.0 sws.c
-0.5 0.0 network.c
-0.5 0.0 network.h
-0.5 0.0 makefile
-0.0 1.0 sws.c
-0.5 0.0 network.c
-0.5 1.0 network.h
-0.5 0.0 makefile
->>>>>>> 494d153b4fcd911452ede5cc60a080d36e7e2ce3
