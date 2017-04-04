@@ -7,22 +7,20 @@
  *          processes each client request.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+
 
 #include "network.h"
+#include "sws.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 #define TIME_QUANTUM 4096					//Length of time for Round Robin CPU time
 
+struct Queue *WorkQueue;
+struct Queue *SJF;
+struct Queue *RR;
 
-static struct Queue SJF;
-static struct Queue RR;
-
+int global_counter;
 //int RCB_elements = 0;
-
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
@@ -32,7 +30,29 @@ static struct Queue RR;
  *             fd : the file descriptor to the client connection
  * Returns: None
  */
+void printQueue(struct Queue *q){
+	if(q->head == q->tail == NULL){
+		printf("\nThere are no items in this list!\n");
+	}
+	struct RCB* rcb = q->head;
+	while(rcb!=NULL){
+		printf("\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+		rcb = rcb->next;
+	}
+}
+void init(void){
+	WorkQueue = (struct Queue*)malloc(sizeof(struct Queue));
+	SJF = (struct Queue*)malloc(sizeof(struct Queue));
+	RR = (struct Queue*)malloc(sizeof(struct Queue));
+	global_counter = 0;
+	WorkQueue->name = "WorkQueue";
+	SJF->name = "SJF";
+	RR->name="RR";
+} 
+ 
 static void serve_client( int fd ) {
+  struct RCB* rcb = (struct RCB*)malloc(sizeof(struct RCB));
+ 
   static char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   char *brk;                                        /* state used by strtok */
@@ -62,7 +82,7 @@ static void serve_client( int fd ) {
   if( tmp && !strcmp( "GET", tmp ) ) {
     req = strtok_r( NULL, " ", &brk );
   }
- 
+  
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );                       /* if not, send err */
@@ -76,41 +96,40 @@ static void serve_client( int fd ) {
       len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
       write( fd, buffer, len );
 
-      do {                                          /* loop, read & send file */
-        len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  /* read file chunk */
-        if( len < 0 ) {                             /* check for errors */
-            perror( "Error while writing to client" );
-        } else if( len > 0 ) {                      /* if none, send chunk */
-          len = write( fd, buffer, len );
-          if( len < 1 ) {                           /* check for errors */
-            perror( "Error while writing to client" );
-          }
-        }
-      } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+/*      do {                                          // loop, read & send file */
+/*        len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  // read file chunk */
+/*        if( len < 0 ) {                             // check for errors */
+/*            perror( "Error while writing to client" );*/
+/*        } else if( len > 0 ) {                      // if none, send chunk */
+/*          len = write( fd, buffer, len );*/
+/*          if( len < 1 ) {                           // check for errors */
+/*            perror( "Error while writing to client" );*/
+/*          }*/
+/*        }*/
+/*      } while( len == MAX_HTTP_SIZE );              // the last chunk < 8192 */
       
       //Somewhere in here, add in RCB allocation and enqueueing
+      fseek(fin, 0L, SEEK_END);
+      int size = ftell(fin);
+      rewind(fin);      
       
-      fclose( fin );
+      rcb->remainingBytes = size;
+      rcb->clientfd = fd;
+      rcb->quantum = 4028;
+      rcb->file = fin;
+      rcb->sequence = ++global_counter;
+      
+      enqueue(WorkQueue,rcb);
+      
+      
+      //fclose( fin );
     }
   }
-  close( fd );                                     /* close client connectuin*/
+  //close( fd );                                     /* close client connectuin*/
 }
 
 
-struct RCB{
-	int sequence;
-	//File Descriptor (network_wait()?)
-	FILE* file;
-	int remainingBytes;
-	int quantum;
-	struct RCB* next;
-};
 
-struct Queue{
-	struct RCB *head;
-	struct RCB *tail;
-	int size;
-};
 	
 
 
@@ -118,80 +137,126 @@ struct Queue{
 // struct RCB *tail = NULL;
 
 //ENSURE MUTEX WHEN CALLING THIS
-void enqueue (struct Queue **q, struct RCB *rcb)
+void enqueue(struct Queue *q, struct RCB *rcb)
 {
-  rcb->next = NULL;
-  if(q->head == NULL && q->tail == NULL)
-  {
-    q->head = rcb;
-    q->tail = rcb;
-    q->size++;
-    return;
-  }
-  (q->tail)->next = rcb;
-  q->tail = rcb;
-  q->size++;
+	rcb->next = NULL;
+	if(q->head == NULL && q->tail == NULL)
+	{
+		q->head = rcb;
+		q->tail = rcb;
+		q->size++;
+	}
+	else{
+		q->tail->next = rcb;
+		q->tail = rcb;
+		q->size++;
+	}	
+    printf("\nEnqueueing in %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
+	return;
 }
 
-struct RCB* dequeue(struct Queue q){
+struct RCB* dequeue(struct Queue *q){
 	struct RCB *rcb = q->head;
-	if(q->head == NULL) return q->head;
+	
+	if(q->head == NULL){
+	 printf("\nERROR YOU SUCK\n");
+	 exit(0);
+	}
+	
 	if(q->head == q->tail){ 
 		q->head = q->tail = NULL;
-	else head = head->next;
+	}
+	
+	else
+		q->head = q->head->next;
+	printf("\nDequeueing from %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+	q->size--;
 	return rcb;
 }
 
-// struct RCB* dequeue(struct RCB *item, struct RCB *head){
-// 	struct RCB *rcb;
-// 	if(*head == NULL) return *head;
-// 	if(*head->next == NULL){
-// 		rcb = *head;
-// 		*head = NULL;
-// 		return rcb;
-// 	}
-// 	if(*head->next == item){
-// 		*head->next = item->next;
-// 	}
-// 	 
-// }
-
-void RoundRobin(struct Queue q){
-	struct RCB *rcb;
+struct RCB* dequeue_at(struct Queue *q, int shortest){
 	
-	while(head != NULL){
-		rcb = dequeue(q);
-		//Work on rcb until time quantum has been filled
-		//While working on it, reduce the rcb->remainingBytes
-		if(rcb->remainingBytes > 0)
-			enqueue(q,rcb);		
+	if(q->head == NULL){
+		return NULL;
+	}
+/*	if(q->head->next == NULL)*/
+/*		return dequeue(q);*/
+	
+	
+	struct RCB* temp = q->head;
+	struct RCB* node = NULL;
+	//struct RCB* prev = NULL;
+	
+	if(q->head->remainingBytes == shortest){		
+		return dequeue(q);
+	}
+	
+	while(temp->remainingBytes != shortest && temp != NULL){
+		if(temp->next->remainingBytes == shortest){
+			//printf("\n
+			node = temp->next;
+			temp->next = temp->next->next;
+			break;			
+		}
+		temp = temp->next;	
+	}
+	
+	if(temp == NULL){
+ 		printf("\nError dequeing RCB %d\n", shortest);
+		exit(0);
+	}
+	q->size--;
+	printf("\nDequeueing from %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,node->sequence, node->clientfd, node->remainingBytes);
+	return node;
+/*	while(temp->remainingBytes != shortest || temp == NULL){*/
+/*		//printf("\nCurr val: %d\tComparing: %d\n",temp->clientfd,clientfd);*/
+/*		temp = temp->next;		*/
+/*		*/
+/*	}*/
+/*	*/
+
+ 	
+/* 	if(temp->next == NULL && temp->remainingBytes == shortest){*/
+/* 		q->tail == NULL;*/
+/* 		return temp; 		*/
+/* 	}*/
+/* 		*/
+/* 	struct RCB *next = temp->next->next;*/
+/* 	node = temp->next;*/
+/* 	//free(temp->next);*/
+/* 	temp->next = next;*/
+/* 	q->size--;*/
+/* 	return node;	*/
+}
+
+void enqueueSJF(void){
+	struct RCB* rcb;
+	//int clientfd;
+	//int position = 0;	
+		
+	if(WorkQueue->head != NULL)
+		rcb = WorkQueue->head;
+		
+	int shortest = rcb->remainingBytes;
+		
+	for(int i=0; rcb != NULL && i < WorkQueue->size; i++){
+		if(shortest > rcb->remainingBytes){
+			shortest = rcb->remainingBytes;			
+		}
+		rcb = rcb->next;
+	}
+	
+	printf("\nSmallest = %d\n",shortest);
+	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
+}
+
+void enqueueRR(void){
+	while(WorkQueue->size!=0){
+		enqueue(RR,dequeue(WorkQueue));
 	}
 }
 
-void SJF(struct Queue q){
-	struct RCB *rcb,*temp;
-	
-	int shortest_quantum = -1;
-	
-	if(head != NULL)
-		rcb = head;
-	
-	while(head != NULL){	
-		rcb = head;
-		while(rcb != NULL){
-			if(shortest_quantum < rcb->quantum || shortest_quantum == -1)
-				shortest_quantum = rcb->quantum;
-			rcb = rcb->next;
-		}
-		rcb = head;
-		
-		while(rcb-> != NULL){
-			
-			
-			if(head->quantum == shortest_quantum)
-				
-		}
-}
+
 
 /* This function is where the program starts running.
  *    The function first parses its command line parameters to determine port #
@@ -206,6 +271,7 @@ void SJF(struct Queue q){
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
+	init();
 	
 	
   /* check for and process parameters 
@@ -218,10 +284,33 @@ int main( int argc, char **argv ) {
   network_init( port );                             /* init network module */
 
   for( ;; ) {                                       /* main loop */
+    printf("\nWaiting\n");
     network_wait();                                 /* wait for clients */
-
+	
+	
+	
     for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      serve_client( fd );                           /* process each client */
+      serve_client( fd ); 
+      fflush(stdout);                          /* process each client */
     }
+    printQueue(WorkQueue);
+    puts("\n");
+/*    while(WorkQueue->size!=0)*/
+/*      dequeue(WorkQueue);*/
+    if(strcmp(argv[2],"SJF") == 0)
+    	while(WorkQueue->size != 0)
+    		enqueueSJF();
+    	printQueue(WorkQueue);
+    	puts("\n");
+    	printQueue(SJF);
+/*    switch(argv[2]){*/
+/*    	case "SJF":*/
+/*    		enqueueSJF();*/
+/*    		break;*/
+/*    	case "RR":*/
+/*    		enqueueRR();*/
+/*    		break;*/
+/*    	default:*/
+/*    }*/
   }
 }

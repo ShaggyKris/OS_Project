@@ -6,7 +6,7 @@ ADD_OBJS =
 
 # compilers, linkers, utilities, and flags
 CC = gcc
-CFLAGS = -Wall -g
+CFLAGS = -Wall -g -std=c99
 COMPILE = $(CC) $(CFLAGS)
 LINK = $(CC) $(CFLAGS) -o $@ 
 
