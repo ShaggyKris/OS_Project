@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
+#include <pthread.h>
 #include "network.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
@@ -23,11 +23,16 @@ typedef struct{
   int remainingB;
   int quantum;
   int notFin;//forRR
+  int working;
 }RCB;
+
+void *work(void*);
 
 //RCB table 
 RCB *rcbTable[64];
 int globalCounter;
+int sjfEnd;
+pthread_mutex_t thread_lock=PTHREAD_MUTEX_INITIALIZER;
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
@@ -80,10 +85,11 @@ static void serve_client( int fd ) {
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );  
       write( fd, buffer, len );                     /* if not, send err */
     } else {                                        /* if so, send file */
-			len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
-			write( fd, buffer,len );
-			/*Initializes the RCB*/
-			newRCB->seq = ++globalCounter;
+	  len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
+	  write( fd, buffer,len );
+	  /*-----THREAD SAFE OPERATION---------*/
+	  /*Initializes the RCB*/
+	  newRCB->seq = ++globalCounter;
       newRCB->clientfd = fd;
       fseek(fin, 0L, SEEK_END);
       int sz = ftell(fin);
@@ -94,7 +100,7 @@ static void serve_client( int fd ) {
       newRCB->notFin=0;//not finished 
       //add to rcb table 
       rcbTable[globalCounter-1]=newRCB;
-
+      /*-------END-----------------------*/
     }
   }
   
@@ -106,33 +112,57 @@ static void serve_client( int fd ) {
   to longest.
 */
 
+int globalI=0;
+
 int runSJF(){
 	//sort the array of RCB 
 	RCB *shortest;
 	int i,j=0;
-	
+
 	//insertion sort 
-	for (i=1;i<globalCounter;i++){
-		shortest=rcbTable[i];
-		for(j=i;j>0 && rcbTable[j-1]->remainingB > shortest ->remainingB; j--){
-			rcbTable[j]=rcbTable[j-1];
-		}
-		rcbTable[j]=shortest;
-	}
+	    for (i=1;i<globalCounter;i++){
+	    	shortest=rcbTable[i];
+	    	for(j=i;j>0 && rcbTable[j-1]->remainingB > shortest ->remainingB; j--){
+	    		rcbTable[j]=rcbTable[j-1];
+	    	}
+	    	rcbTable[j]=shortest;
+	    }
 	
+
+	
+    i=0;
 	//process request
-	for(i=0;i<globalCounter;i++){
+	pthread_mutex_lock(&thread_lock);
+	while(globalI<globalCounter){
+
+	    if(rcbTable[globalI]->notFin==1){
+	    	globalI++;
+	       if(globalI>=globalCounter)
+	    	 break;
+	    	 
+	        continue;
+	    }
+
 		//for debug 
-		printf("Job seq %d\nLength %d\n",rcbTable[i]->seq,rcbTable[i]->remainingB);
+		printf("Job seq %d\nLength %d\n",rcbTable[globalI]->seq,rcbTable[globalI]->remainingB);
 		fflush(stdout);
 		//call process routine for each rcb stored in table 
-		procSJF(rcbTable[i]);
+
+		if(rcbTable[globalI]->notFin==0){
+			if(globalI>=globalCounter)
+	    	 break;
+		    procSJF(rcbTable[globalI]);
+		    globalI++;
+		}
+
+
+		
 	}
-	//for debug 
-	puts("\n");
-	
+	pthread_mutex_unlock(&thread_lock);
+
 	//initializes the counter for next use 
-   globalCounter=0;
+	if(globalI>=globalCounter)
+    	globalCounter=0;
 	return 0;
 }
 
@@ -145,8 +175,10 @@ int procSJF(RCB *element){
 	static char *buffer;
 	int len;
 	buffer = malloc( MAX_HTTP_SIZE );
+	
+	element->working=1;
 
-	     
+
   do {                                          /* loop, read & send file */
     len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
     if( len < 0 ) {                             /* check for errors */
@@ -158,10 +190,13 @@ int procSJF(RCB *element){
       }
     }
   } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+
   fclose( element->file );
   close(element->clientfd);
-  
-  return 0;
+  element->notFin=1;
+  element->working=0;
+  free(buffer);
+  return 1;
 }
 
 /*
@@ -173,7 +208,8 @@ int procRR(RCB* element){
 	int len;
 	buffer = malloc( MAX_HTTP_SIZE );
 	int end=0;
-	     
+	if(element->notFin==1)
+		return 1;
 
     len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
     if( len < 0 ) {                             /* check for errors */
@@ -210,13 +246,22 @@ int runRR(){
 	int k,end=0;
 	int fin=0;
 	//loop through the array of table until all process finishes 
+
 	do{
+
 	for (i=0;i<globalCounter;i++){
 		//process request if it is not completed yet 
-		if(rcbTable[i]->notFin==0)
-			end+=procRR(rcbTable[i]);
+		if(rcbTable[i]->notFin==0){
+			//critical section
+			pthread_mutex_lock(&thread_lock);
+			globalI+=procRR(rcbTable[i]);
+			//end of critical section
+			pthread_mutex_unlock(&thread_lock);
 		}
-	}while(end<globalCounter);
+
+		}
+
+	}while(globalI<globalCounter);
 	
 	globalCounter=0;
 
@@ -334,7 +379,8 @@ int runMLFB(){
 
 	return 0;
 }
-	
+
+
 
 /* This function is where the program starts running.
  *    The function first parses its command line parameters to determine port #
@@ -351,18 +397,19 @@ int main( int argc, char **argv ) {
   int fd;                                           /* client file descriptor */
 	
 	globalCounter=0;
-	
+
   /* check for and process parameters 
    */
-   if( ( argc < 3 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ||
+   if( ( argc < 4 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ||
       ( strcmp(argv[2], "SJF") != 0 && strcmp(argv[2], "RR") != 0 &&
 	strcmp(argv[2], "MLFB"))){
-    printf( "usage: sms <port> <scheduler>\n" );
+    printf( "usage: sms <port> <scheduler> <number of threads>\n" );
     return 0;
   }
-
+  pthread_t worker[4];
   network_init( port );                             /* init network module */
-
+ 
+	
   for( ;; ) {                                       /* main loop */
     network_wait();                                 /* wait for clients */
 
@@ -370,12 +417,29 @@ int main( int argc, char **argv ) {
       serve_client( fd );                           /* process each client */
      
     }
-   if( strcmp(argv[2], "SJF") == 0)
+      for(int i=0;i<4;i++){
+		pthread_create(&worker[i],NULL,work,(void*)argv[2]);
+	}
+    
+   /*if( strcmp(argv[2], "SJF") == 0)
    	runSJF();
    else if(strcmp(argv[2], "RR")==0)
     runRR();
    else
-   	runMLFB();
+   	runMLFB();*/
+   	for(int i=0;i<4;i++){
+		pthread_join(worker[i],NULL);
+
+	}
+	globalI=0;
 
   }
+ }
+void *work(void *scheduler){
+    if(strcmp(scheduler,"SJF")== 0)
+        runSJF();
+    else if(strcmp(scheduler, "RR")==0)
+    	runRR();
+   else
+   		runMLFB();
 }
