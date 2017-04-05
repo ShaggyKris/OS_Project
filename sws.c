@@ -21,7 +21,7 @@ struct Queue *SJF;
 struct Queue *RR;
 
 pthread_mutex_t signal, enqueue_m, process_m;
-pthread_cond_t sig_no_work;
+pthread_cond_t sig_no_work = PTHREAD_COND_INITIALIZER;
 
 int global_counter;
 //int RCB_elements = 0;
@@ -64,6 +64,7 @@ static void serve_client( int fd ) {
   FILE *fin;                                        /* input file handle */
   int len;                                          /* length of data read */
 
+	
   if( !buffer ) {                                   /* 1st time, alloc buffer */
     buffer = malloc( MAX_HTTP_SIZE );
     if( !buffer ) {                                 /* error check */
@@ -270,14 +271,13 @@ void *thread_SJF(void *name){
 	printf("\nI am thread %d.\n",name);
 	fflush(stdout);
 	//struct RCB* rcb;
-	
 	while(1){
 		
 		printQueue(SJF);
+		printf("\nThread %d waiting for work.\n",name);
+		fflush(stdout);
 		
-		printf("\nWaiting for work.\n");
-		fflush(stdout);	
-		pthread_cond_wait(&sig_no_work,&signal);
+		//while(semaphore == 0)
 		
 		while(WorkQueue->head != NULL){
 			pthread_mutex_lock(&enqueue_m);
@@ -304,8 +304,7 @@ void *thread_SJF(void *name){
 			processSJF(dequeue(SJF));
 			pthread_mutex_unlock(&enqueue_m);			
 		}							
-	}
-	
+	}	
 	pthread_exit(NULL);
 }
 
@@ -357,8 +356,10 @@ int main( int argc, char **argv ) {
 	}
 	for( ;; ) {                                       /* main loop */
 		printf("\nWaiting\n");
+		
 		network_wait();                                /* wait for clients */
-	
+		global_counter = 0;
+		
 		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
 		  serve_client( fd ); 
 		  fflush(stdout);                          /* process each client */
@@ -368,7 +369,8 @@ int main( int argc, char **argv ) {
 		puts("\n");
 	/*    while(WorkQueue->size!=0)*/
 	/*      dequeue(WorkQueue);*/		
-		pthread_cond_signal(&sig_no_work);	
+		pthread_cond_signal(&sig_no_work);
+			
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
 /*    		*/
