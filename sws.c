@@ -14,7 +14,7 @@
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 #define TIME_QUANTUM 4096					//Length of time for Round Robin CPU time
-#define NUM_THREADS 2
+#define NUM_THREADS 10
 
 struct Queue *WorkQueue;
 struct Queue *SJF;
@@ -35,7 +35,7 @@ int global_counter;
  * Returns: None
  */
 void printQueue(struct Queue *q){
-	if(q->size <= 0){
+	if(q->head == NULL){
 		printf("\nThere are no items in this list!\n");
 	}
 	struct RCB* rcb = q->head;
@@ -124,8 +124,9 @@ static void serve_client( int fd ) {
       rcb->file = fin;
       rcb->sequence = ++global_counter;
       
+      printf("\nAbout to enqueue from serve_client\n");
       enqueue(WorkQueue,rcb);
-      
+      pthread_cond_broadcast(&sig_no_work);
       
       //fclose( fin );
     }
@@ -145,18 +146,20 @@ static void serve_client( int fd ) {
 void enqueue(struct Queue *q, struct RCB *rcb)
 {
 	rcb->next = NULL;
-	if(q->head == NULL && q->tail == NULL)
+	if(q->head == NULL)
 	{
 		q->head = rcb;
 		q->tail = rcb;
 		q->size++;
+		printf("\nEnqueueing in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}
 	else{
 		q->tail->next = rcb;
 		q->tail = rcb;
 		q->size++;
+		printf("\nEnqueueing to tail in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}	
-    printf("\nEnqueueing in %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
+    
 	return;
 }
 
@@ -169,12 +172,13 @@ struct RCB* dequeue(struct Queue *q){
 	}
 	
 	if(q->head == q->tail){ 
-		q->head = q->tail = NULL;
+		q->head = NULL;
+		q->tail = NULL;
 	}
 	
 	else
 		q->head = q->head->next;
-	printf("\nDequeueing from %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+	printf("\nDequeueing from %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
 	q->size--;
 	return rcb;
 }
@@ -196,7 +200,7 @@ struct RCB* dequeue_at(struct Queue *q, int shortest){
 		return dequeue(q);
 	}
 	
-	while(temp->remainingBytes != shortest && temp != NULL){
+	while(temp != NULL && temp->remainingBytes != shortest){
 		if(temp->next->remainingBytes == shortest){
 			//printf("\n
 			node = temp->next;
@@ -211,7 +215,7 @@ struct RCB* dequeue_at(struct Queue *q, int shortest){
 		exit(0);
 	}
 	q->size--;
-	printf("\nDequeueing from %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,node->sequence, node->clientfd, node->remainingBytes);
+	printf("\nDequeueing from %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,node->sequence, node->clientfd, node->remainingBytes);
 	return node;
 }
 
@@ -271,40 +275,46 @@ void *thread_SJF(void *name){
 	printf("\nI am thread %d.\n",name);
 	fflush(stdout);
 	//struct RCB* rcb;
+	
 	while(1){
-		
-		printQueue(SJF);
-		printf("\nThread %d waiting for work.\n",name);
-		fflush(stdout);
-		
-		//while(semaphore == 0)
+		printf("\nThread %d printing Work Queue.\n",name);
+		printQueue(WorkQueue);		
 		
 		while(WorkQueue->head != NULL){
 			pthread_mutex_lock(&enqueue_m);
-			//printf("\n\tHey I'm putting shit into SJF queue.\n");
+			
 			if(WorkQueue->head == NULL){
 				pthread_mutex_lock(&enqueue_m);
 				break;
 			}
-			
+			printf("\n\tHey, Thread %d enqueuing on stuff in SJF queue.\n",name);
 			enqueueSJF();
 			
 			pthread_mutex_unlock(&enqueue_m);			
-		}					
+		}
+							
 		while(SJF->head != NULL){
 			
-			pthread_mutex_lock(&enqueue_m);
+			pthread_mutex_lock(&process_m);
+			
 			if(SJF->head == NULL){
-				pthread_mutex_unlock(&enqueue_m);
+				pthread_mutex_unlock(&process_m);
 				break;
 			}
+			
 			printf("\n\tHey, Thread %d working on stuff from SJF queue.\n",name);
 			fflush(stdout);			
 			
 			processSJF(dequeue(SJF));
-			pthread_mutex_unlock(&enqueue_m);			
-		}							
-	}	
+			pthread_mutex_unlock(&process_m);			
+		}
+		if(SJF->head == NULL && WorkQueue->head == NULL){
+			printf("\nThread %d waiting for work.\n",name);
+			fflush(stdout);
+			pthread_cond_wait(&sig_no_work,&signal);
+		}
+										
+	}
 	pthread_exit(NULL);
 }
 
@@ -358,18 +368,18 @@ int main( int argc, char **argv ) {
 		printf("\nWaiting\n");
 		
 		network_wait();                                /* wait for clients */
-		global_counter = 0;
+		//global_counter = 0;
 		
 		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
 		  serve_client( fd ); 
 		  fflush(stdout);                          /* process each client */
 		}
 		
+		printf("\nMain is about to print the work queue.\n");
 		printQueue(WorkQueue);
 		puts("\n");
-	/*    while(WorkQueue->size!=0)*/
-	/*      dequeue(WorkQueue);*/		
-		pthread_cond_signal(&sig_no_work);
+		
+			
 			
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
