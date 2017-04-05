@@ -7,32 +7,24 @@
  *          processes each client request.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <pthread.h>
+
+
 #include "network.h"
+#include "sws.h"
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
+#define TIME_QUANTUM 4096					//Length of time for Round Robin CPU time
+#define NUM_THREADS 4
 
-typedef struct{
-  int seq;
-  int clientfd;
-  FILE* file;
-  int remainingB;
-  int quantum;
-  int notFin;//forRR
-  int working;
-}RCB;
+struct Queue *WorkQueue;
+struct Queue *SJF;
+struct Queue *RR;
 
-void *work(void*);
+pthread_mutex_t signal, enqueue_m, process_m;
+pthread_cond_t sig_no_work = PTHREAD_COND_INITIALIZER;
 
-//RCB table 
-RCB *rcbTable[64];
-int globalCounter;
-int sjfEnd;
-pthread_mutex_t thread_lock=PTHREAD_MUTEX_INITIALIZER;
+int global_counter;
+//int RCB_elements = 0;
 
 /* This function takes a file handle to a client, reads in the request, 
  *    parses the request, and sends back the requested file.  If the
@@ -42,7 +34,31 @@ pthread_mutex_t thread_lock=PTHREAD_MUTEX_INITIALIZER;
  *             fd : the file descriptor to the client connection
  * Returns: None
  */
+void printQueue(struct Queue *q){
+	if(q->head == NULL){
+		printf("\nThere are no items in this list!\n");
+		fflush(stdout);
+	}
+	struct RCB* rcb = q->head;
+	while(rcb!=NULL){
+		printf("\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+		fflush(stdout);
+		rcb = rcb->next;
+	}
+}
+void init(void){
+	WorkQueue = (struct Queue*)malloc(sizeof(struct Queue));
+	SJF = (struct Queue*)malloc(sizeof(struct Queue));
+	RR = (struct Queue*)malloc(sizeof(struct Queue));
+	global_counter = 0;
+	WorkQueue->name = "WorkQueue";
+	SJF->name = "SJF";
+	RR->name="RR";
+} 
+ 
 static void serve_client( int fd ) {
+  struct RCB* rcb = (struct RCB*)malloc(sizeof(struct RCB));
+ 
   static char *buffer;                              /* request buffer */
   char *req = NULL;                                 /* ptr to req file */
   char *brk;                                        /* state used by strtok */
@@ -50,6 +66,7 @@ static void serve_client( int fd ) {
   FILE *fin;                                        /* input file handle */
   int len;                                          /* length of data read */
 
+	
   if( !buffer ) {                                   /* 1st time, alloc buffer */
     buffer = malloc( MAX_HTTP_SIZE );
     if( !buffer ) {                                 /* error check */
@@ -72,9 +89,7 @@ static void serve_client( int fd ) {
   if( tmp && !strcmp( "GET", tmp ) ) {
     req = strtok_r( NULL, " ", &brk );
   }
-  //create RCB for this request 
-  RCB *newRCB=(RCB*)malloc(sizeof(RCB));
- 
+  
   if( !req ) {                                      /* is req valid? */
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );                       /* if not, send err */
@@ -85,336 +100,333 @@ static void serve_client( int fd ) {
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );  
       write( fd, buffer, len );                     /* if not, send err */
     } else {                                        /* if so, send file */
-	  len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
-	  write( fd, buffer,len );
-	  /*-----THREAD SAFE OPERATION---------*/
-	  /*Initializes the RCB*/
-	  newRCB->seq = ++globalCounter;
-      newRCB->clientfd = fd;
+      len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
+      write( fd, buffer, len );
+
+/*      do {                                          // loop, read & send file */
+/*        len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  // read file chunk */
+/*        if( len < 0 ) {                             // check for errors */
+/*            perror( "Error while writing to client" );*/
+/*        } else if( len > 0 ) {                      // if none, send chunk */
+/*          len = write( fd, buffer, len );*/
+/*          if( len < 1 ) {                           // check for errors */
+/*            perror( "Error while writing to client" );*/
+/*          }*/
+/*        }*/
+/*      } while( len == MAX_HTTP_SIZE );              // the last chunk < 8192 */
+      
+      //Somewhere in here, add in RCB allocation and enqueueing
       fseek(fin, 0L, SEEK_END);
-      int sz = ftell(fin);
-      rewind(fin);
-      newRCB->remainingB = sz;
-      newRCB->quantum=4028;
-      newRCB->file=fin;
-      newRCB->notFin=0;//not finished 
-      //add to rcb table 
-      rcbTable[globalCounter-1]=newRCB;
-      /*-------END-----------------------*/
+      int size = ftell(fin);
+      rewind(fin);      
+      
+      rcb->remainingBytes = size;
+      rcb->clientfd = fd;
+      rcb->quantum = 4028;
+      rcb->file = fin;
+      rcb->sequence = ++global_counter;
+      
+      printf("\nAbout to enqueue from serve_client\n");
+      fflush(stdout);
+      
+      enqueue(WorkQueue,rcb);
+      //pthread_cond_broadcast(&sig_no_work);
+      
+      //fclose( fin );
     }
   }
-  
-  
-  
+  //close( fd );                                     /* close client connectuin*/
 }
-/*This function is to sort the RCB table.
-  At this point, insertion sort is used to sort the job from shortest
-  to longest.
-*/
 
-int globalI=0;
-int isSorted=0;
 
-int runSJF(){
-	//sort the array of RCB 
-	RCB *shortest;
-	int i,j=0;
-	//if not sorted by previous threads
-	if(isSorted==0){
-	//insertion sort 
-	    for (i=1;i<globalCounter;i++){
-	    	shortest=rcbTable[i];
-	    	for(j=i;j>0 && rcbTable[j-1]->remainingB > shortest ->remainingB; j--){
-	    		rcbTable[j]=rcbTable[j-1];
-	    	}
-	    	rcbTable[j]=shortest;
-	    }
+
+	
+
+
+// struct RCB *head = NULL;
+// struct RCB *tail = NULL;
+
+//ENSURE MUTEX WHEN CALLING THIS
+void enqueue(struct Queue *q, struct RCB *rcb)
+{
+	rcb->next = NULL;
+	if(q->head == NULL)
+	{
+		q->head = rcb;
+		q->tail = rcb;
+		q->size++;
+		printf("\nEnqueueing in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}
-	isSorted=1;
-	
-    i=0;
-	//process request
-	pthread_mutex_lock(&thread_lock);
-	while(globalI<globalCounter){
-
-	    if(rcbTable[globalI]->notFin==1){
-	    	globalI++;
-	       if(globalI>=globalCounter)
-	    	 break;
-	    	 
-	        continue;
-	    }
-
-		//for debug 
-		printf("Job seq %d\nLength %d\n",rcbTable[globalI]->seq,rcbTable[globalI]->remainingB);
-		fflush(stdout);
-		//call process routine for each rcb stored in table 
-
-		if(rcbTable[globalI]->notFin==0){
-			if(globalI>=globalCounter)
-	    	 break;
-		    procSJF(rcbTable[globalI]);
-		    globalI++;
-		}
-
-
-		
+	else{
+		q->tail->next = rcb;
+		q->tail = rcb;
+		q->size++;
+		printf("\nEnqueueing to tail in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}
-	pthread_mutex_unlock(&thread_lock);
-
-	//initializes the counter for next use 
-	if(globalI>=globalCounter)
-    	globalCounter=0;
-	return 0;
+	fflush(stdout);	
+    
+	return;
 }
 
-/*
-This is the function which actually process the request in rcb table
-This function takes in RCB and process the request.
-*/
-
-int procSJF(RCB *element){
-	static char *buffer;
-	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
+struct RCB* dequeue(struct Queue *q){
+	struct RCB *rcb = q->head;
 	
-	element->working=1;
-
-
-  do {                                          /* loop, read & send file */
-    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
-    if( len < 0 ) {                             /* check for errors */
-         perror( "Error while writing to client" );
-    } else if( len > 0 ) {                      /* if none, send chunk */
-      len = write( element->clientfd, buffer, len );
-      if( len < 1 ) {                           /* check for errors */
-        perror( "Error while writing to client" );
-      }
-    }
-  } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
-
-  fclose( element->file );
-  close(element->clientfd);
-  element->notFin=1;
-  element->working=0;
-  free(buffer);
-  return 1;
-}
-
-/*
-* Function To process the request in RR queue
-*/
-
-int procRR(RCB* element){
-	static char *buffer;
-	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
-	int end=0;
-	if(element==NULL)
-		return 0;
-	if(element->notFin==1)
-		return 1;
-
-    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
-    if( len < 0 ) {                             /* check for errors */
-         perror( "Error while writing to client" );
-    } else if( len > 0 ) {                      /* if none, send chunk */
-      len = write( element->clientfd, buffer, len );
-      element->remainingB=element->remainingB-len;
-      if( len < 1 ) {                           /* check for errors */
-        perror( "Error while writing to client" );
-      }
-    }
-//if requested is finished 
-  if(element->remainingB <= 0){
-		end=1;
-		element->notFin=1;
-		fclose( element->file );
- 		close(element->clientfd);
- 		printf("REQUEST %d FINISHED(RR)\n",element->seq);
- 		fflush(stdout);
- 		return end;
- }
- printf("REQUEST %d SENT BACK TO QUEUE(RR) Rem %d\n",element->seq,element->remainingB);
- 		fflush(stdout);
-  free(buffer);
-  return 0;
-}
-
-
-//function to run RR
-int runRR(){
-	//Run in arrival order until it goes over the quantum
-
-	int i=0;
-	int k,end=0;
-	int fin=0;
-	//loop through the array of table until all process finishes 
-
-	do{
-
-	for (i=0;i<globalCounter;i++){
-		//process request if it is not completed yet 
-		if(rcbTable[i]->notFin==0){
-			//critical section
-			pthread_mutex_lock(&thread_lock);
-			globalI+=procRR(rcbTable[i]);
-			//end of critical section
-			pthread_mutex_unlock(&thread_lock);
-		}
-
-		}
-
-	}while(globalI<globalCounter);
+	if(q->head == NULL){
+		printf("\nERROR YOU SUCK\n");
+		exit(0);
+	}
 	
-	globalCounter=0;
-
-	return 0;
+	if(q->head == q->tail){ 
+		q->head = NULL;
+		q->tail = NULL;
+	}
+	
+	else
+		q->head = q->head->next;
+	printf("\nDequeueing from %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+	q->size--;
+	return rcb;
 }
 
-RCB* proc8KB(RCB *element){
-	static char *buffer;
-	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
-	int i=0;	     
+struct RCB* dequeue_at(struct Queue *q, int shortest){
 	
-	if(element==NULL)
+	if(q->head == NULL){
 		return NULL;
+	}
+/*	if(q->head->next == NULL)*/
+/*		return dequeue(q);*/
+	
+	
+	struct RCB* temp = q->head;
+	struct RCB* node = NULL;
+	//struct RCB* prev = NULL;
+	
+	if(q->head->remainingBytes == shortest){		
+		return dequeue(q);
+	}
+	
+	while(temp != NULL && temp->remainingBytes != shortest){
+		if(temp->next->remainingBytes == shortest){
+			//printf("\n
+			node = temp->next;
+			temp->next = temp->next->next;
+			break;			
+		}
+		temp = temp->next;	
+	}
+	
+	if(temp == NULL){
+ 		printf("\nError dequeing RCB %d\n", shortest);
+		exit(0);
+	}
+	q->size--;
+	printf("\nDequeueing from %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,node->sequence, node->clientfd, node->remainingBytes);
+	return node;
+}
 
-    	len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
-    	if( len < 0 ) {                             /* check for errors */
-    	     perror( "Error while writing to client" );
-    	} else if( len > 0 ) {                      /* if none, send chunk */
-    	  len = write( element->clientfd, buffer, len );
-    	  
-    	  element->remainingB=element->remainingB-len;
-    	  if( len < 1 ) {                           /* check for errors */
-    	    perror( "Error while writing to client" );
-    	  }
-    	 }
-    	//if requested is finished 
- 	 if(element->remainingB <= 0){
-		element->notFin=1;
-		fclose( element->file );
- 		close(element->clientfd);
- 		printf("REQUEST %d FINISHED IN 8KB QUEUE\n",element->seq);
- 		fflush(stdout);
- 		return element;
- 		}
-   	 printf("REQUEST %d WAS ONCE IN 8KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
- fflush(stdout);
+void enqueueSJF(void){
+	struct RCB* rcb;
+		
+	if(WorkQueue->head != NULL)
+		rcb = WorkQueue->head;
+		
+	int shortest = rcb->remainingBytes;
+		
+	for(int i=0; rcb != NULL && i < WorkQueue->size; i++){
+		if(shortest > rcb->remainingBytes){
+			shortest = rcb->remainingBytes;			
+		}
+		rcb = rcb->next;
+	}
+	
+	printf("\nSmallest = %d\n",shortest);
+	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
+}
+
+int processSJF(struct RCB* rcb){
+	static char *buffer; 
+	
+	buffer = malloc(MAX_HTTP_SIZE);
+	int len;
+	
+	do {                                          /* loop, read & send file */
+		len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
+		
+		if( len < 0 ) {                             /* check for errors */
+			perror( "Error while writing to client" );
+		} 
+		else if( len > 0 ){                      /* if none, send chunk */
+			len = write( rcb->clientfd, buffer, len );
+			
+			if( len < 1 ) {                           /* check for errors */
+				perror( "Error while writing to client" );
+			}
+		}	
+	} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+	
+	fclose(rcb->file);
+	close(rcb->clientfd);
 	free(buffer);
- return element;
+	return 1;	
 }
 
-RCB* proc64KB(RCB *element){
-	static char *buffer;
+void enqueueRR(void){
+	while(WorkQueue->size!=0){
+		enqueue(RR,dequeue(WorkQueue));
+	}
+}
+
+void processRR(struct RCB *rcb){
+	
+	if(rcb==NULL)
+		return;
+	
+	static char *buffer; 
+	
+	buffer = malloc(MAX_HTTP_SIZE);
 	int len;
-	buffer = malloc( MAX_HTTP_SIZE );
-	int end=0;
-	int i;
 	
-	if(element==NULL)
-		return NULL;
+	len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
 		
-	for(i=0;i<8;i++){
-    len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
-    if( len < 0 ) {                             /* check for errors */
-         perror( "Error while writing to client" );
-    } else if( len > 0 ) {                      /* if none, send chunk */
-      len = write( element->clientfd, buffer, len );
-      
-      element->remainingB=element->remainingB-len;
-      if( len < 1 ) {                           /* check for errors */
-        perror( "Error while writing to client" );
-      }
-    }
-   
-//if requested is finished 
-  if(element->remainingB <= 0){
-		end=1;
-		element->notFin=1;
-		fclose( element->file );
- 		close(element->clientfd);
- 		printf("REQUEST %d FINISHED IN 64KB QUEUE\n",element->seq);
- 		fflush(stdout);
- 		return element;
- }
- }
- printf("REQUEST %d WAS ONCE IN 64KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
- fflush(stdout);
- 	free(buffer);
- return element;
+	if( len < 0 ) {                             /* check for errors */
+		perror( "Error while writing to client" );
+	} 
+	else if( len > 0 ){                      /* if none, send chunk */
+		len = write( rcb->clientfd, buffer, len );
+		rcb->remainingBytes=rcb->remainingBytes-len;
+		if( len < 1 ) {                           /* check for errors */
+			perror( "Error while writing to client" );
+		}
+	}	
+	
+	if(rcb->remainingBytes<=0){
+		fclose(rcb->file);
+		close(rcb->clientfd);
+		free(buffer);
+	}else
+		enqueue(RR,rcb);
+	
+	return 1;
 }
 
-int end=0;
-int elements64=0;
-int remElements=0;
-RCB *KB64[64];
-RCB *Remainder[64];
-int secCount=0;
+void *thread_RR(void *name){
 
-int runMLFB(){
-	//Run in arrival order until it goes over the quantum
+		pthread_mutex_lock(&signal);
+		printf("\nI am thread %d.\n",name);
+		fflush(stdout);
+		pthread_mutex_lock(&signal);
+		while(1){
+			struct RCB *rcb;
+			//if there is stuff in work queue
+			if(pthread_mutex_trylock(&enqueue_m)==0){
+				if(WorkQueue->head!=NULL)
+					enqueueRR();
+				   pthread_mutex_unlock(&enqueue_m);
+			}
 
-	int i=0;
-	RCB *element;
-	//loop through the array of table until all process finishes 
-	
-	while(globalI<globalCounter){
-		pthread_mutex_lock(&thread_lock);
-		element=proc8KB(rcbTable[globalI]);
-		if(element==NULL)
-			continue;
-		if(element->notFin==0){
-			KB64[elements64]=element;
-			elements64++;
-		}
-		globalI++;
-		pthread_mutex_unlock(&thread_lock);
+			//process RR
+			while(RR->head!=NULL){
+				rcb=dequeue(RR);
+		
+				if(rcb!=NULL){
+					pthread_mutex_lock(&process_m);
+					printf("I AM THREAD %d, processing RR\n",name);
+					processRR(rcb);
+					pthread_mutex_unlock(&process_m);
+				}
+			}
 	}
 	
 	
-	//for 64kb elements
-	while(secCount<elements64){
-		pthread_mutex_lock(&thread_lock);
-		element=proc64KB(KB64[secCount]);
-		if(element==NULL)
-			continue;
-		if(element->notFin==0){
-			Remainder[remElements]=element;
-			remElements++;
-		}
-		secCount++;
-		pthread_mutex_unlock(&thread_lock);
+}
 		
-	}
+		
 
-	//for the rest 
-	do{
-	  for (i=0;i<remElements;i++){
-		//process request if it is not completed yet 
-		if(Remainder[i]->notFin==0){
-			pthread_mutex_lock(&thread_lock);
-			end+=procRR(Remainder[i]);
-			pthread_mutex_unlock(&thread_lock);
+void *thread_SJF(void *name){
+	printf("\nI am thread %d.\n",name);
+	fflush(stdout);
+	//struct RCB* rcb;
+	
+	while(1){
+		printf("\nThread %d printing Work Queue.\n",name);
+		fflush(stdout);
+		printQueue(WorkQueue);		
+		
+		//pthread_mutex_lock(&signal);
+		printf("\n\n\tThread %d has locked the Wait loop.\n\n",name);
+		
+		while(WorkQueue->head == NULL){
+/*			printf("\nThread %d waiting for work.\n",name);*/
+/*			fflush(stdout);			*/
+/*			pthread_cond_wait(&sig_no_work,&signal);*/
 		}
-	  }
-	}while(end<remElements);
-	
-	
-
-
-	return 0;
+		
+		//pthread_mutex_unlock(&signal);
+		printf("\n\n\tThread %d has unlocked the Wait loop.\n\n",name);
+		
+		pthread_mutex_lock(&enqueue_m);
+		printf("\n\n\tThread %d has locked the Work Queue.\n\n",name);
+		if(WorkQueue->head != NULL){
+			//printf("\nThread %d has entered WorkQueue loop.\n",name);
+/*			if(pthread_mutex_trylock(&enqueue_m)){*/
+/*				//printf("\nThread %d has locked the Work Queue.\n");*/
+/*				continue;*/
+/*			}*/
+			
+/*			if(WorkQueue->head == NULL){*/
+/*				pthread_mutex_unlock(&enqueue_m);*/
+/*				break;*/
+/*			}*/
+			printf("\n\n\tHey, Thread %d enqueuing on stuff in SJF queue.\n\n",name);
+			fflush(stdout);
+			
+			enqueueSJF();
+						
+						
+		}	
+		pthread_mutex_unlock(&enqueue_m);					
+		printf("\n\n\tThread %d has unlocked the Work Queue.\n\n",name);
+		
+		pthread_mutex_lock(&process_m);
+		printf("\n\n\tThread %d has locked the SJF Queue.\n\n",name);
+		if(SJF->head != NULL){
+			//printf("\nThread %d has entered SJF loop.\n",name);
+/*			if(pthread_mutex_trylock(&process_m)){*/
+/*				//printf("\nThread %d has locked the SJF Queue.\n");*/
+/*				continue;*/
+/*			}*/
+/*			*/
+/*			if(SJF->head == NULL){*/
+/*				pthread_mutex_unlock(&process_m);*/
+/*				break;*/
+/*			}*/			
+			printf("\n\n\tHey, Thread %d working on stuff from SJF queue.\n\n",name);
+			fflush(stdout);			
+			
+			processSJF(dequeue(SJF));			
+/*			pthread_mutex_unlock(&process_m);	*/
+					
+		}
+		pthread_mutex_unlock(&process_m);		
+		printf("\n\n\tThread %d has unlocked the SJF Queue.\n\n",name);							
+	}
+	pthread_exit(NULL);
 }
 
+/*void *thread_RR(void *name){*/
+
+/*}*/
+
+/*void *thread_MLFQ(void *name){*/
+
+/*}*/
 
 
 /* This function is where the program starts running.
  *    The function first parses its command line parameters to determine port #
  *    Then, it initializes, the network and enters the main loop.
  *    The main loop waits for a client (1 or more to connect, and then processes
- *    all clients by calling the seve_client() function for each one.
+ *    all clients by calling the serve_client() function for each one.
  * Parameters: 
  *             argc : number of command line parameters (including program name
  *             argv : array of pointers to command line parameters
@@ -423,52 +435,69 @@ int runMLFB(){
 int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
+	init();
+	setbuf(stdout, NULL);
 	
-	globalCounter=0;
-
+	
   /* check for and process parameters 
    */
-   if( ( argc < 4 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ||
+ if( ( argc < 4 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ||
       ( strcmp(argv[2], "SJF") != 0 && strcmp(argv[2], "RR") != 0 &&
 	strcmp(argv[2], "MLFB"))){
     printf( "usage: sms <port> <scheduler> <number of threads>\n" );
     return 0;
   }
-  pthread_t worker[4];
-  network_init( port );                             /* init network module */
- 
+  int num_of_thread=atoi(argv[3]);
+
+ 	network_init( port );                             /* init network module */
+	pthread_mutex_init(&enqueue_m, NULL);
+	pthread_mutex_init(&process_m, NULL);
+	pthread_mutex_init(&signal, NULL);
 	
-  for( ;; ) {                                       /* main loop */
-    network_wait();                                 /* wait for clients */
-
-    for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      serve_client( fd );                           /* process each client */
-     
-    }
-      for(int i=0;i<4;i++){
-		pthread_create(&worker[i],NULL,work,(void*)argv[2]);
+	
+	pthread_t threads[num_of_thread];
+	
+	for(int i = 0; i < num_of_thread; i++){
+		if(strcmp(argv[2],"SJF")==0){
+			if(pthread_create(&threads[i],NULL,thread_SJF,(void*)i) != 0){
+				printf("\nError creating thread %d\n", i);
+				return 1;
+			}
+		}
+		else if(strcmp(argv[2],"RR")==0){
+			if(pthread_create(&threads[i],NULL,thread_RR,(void*)i) != 0){
+			printf("\nError creating thread %d\n", i);
+			return 1;
+			}
+		}
+		
 	}
-    
-   /*if( strcmp(argv[2], "SJF") == 0)
-   	runSJF();
-   else if(strcmp(argv[2], "RR")==0)
-    runRR();
-   else
-   	runMLFB();*/
-   	for(int i=0;i<4;i++){
-		pthread_join(worker[i],NULL);
-	}
-	globalCounter=0;
-	globalI=0;
-	isSorted=0;
+	
+	for( ;; ) {                                       /* main loop */
+		printf("\nWaiting\n");
+		
+		network_wait();                                /* wait for clients */
+		
+		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
+		  serve_client( fd ); 
+		  pthread_mutex_unlock(&signal);
+		  fflush(stdout);                          /* process each client */
+		}
 
-  }
- }
-void *work(void *scheduler){
-    if(strcmp(scheduler,"SJF")== 0)
-        runSJF();
-    else if(strcmp(scheduler, "RR")==0)
-    	runRR();
-   else
-   		runMLFB();
+		
+		printf("\nMain is about to print the work queue.\n");
+		fflush(stdout);
+		printQueue(WorkQueue);
+		puts("\n");		
+/*    switch(argv[2]){*/
+/*    	case "SJF":*/
+/*    		*/
+/*			break;*/
+/*		default:*/
+/*    }*/
+	}
+	for(int i = 0; i < num_of_thread; i++){
+		pthread_join(threads[i],NULL);
+	}
+  	
 }
