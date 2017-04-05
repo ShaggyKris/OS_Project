@@ -14,10 +14,14 @@
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 #define TIME_QUANTUM 4096					//Length of time for Round Robin CPU time
+#define NUM_THREADS 2
 
 struct Queue *WorkQueue;
 struct Queue *SJF;
 struct Queue *RR;
+
+pthread_mutex_t signal, enqueue_m, process_m;
+pthread_cond_t sig_no_work;
 
 int global_counter;
 //int RCB_elements = 0;
@@ -159,8 +163,8 @@ struct RCB* dequeue(struct Queue *q){
 	struct RCB *rcb = q->head;
 	
 	if(q->head == NULL){
-	 printf("\nERROR YOU SUCK\n");
-	 exit(0);
+		printf("\nERROR YOU SUCK\n");
+		exit(0);
 	}
 	
 	if(q->head == q->tail){ 
@@ -208,31 +212,10 @@ struct RCB* dequeue_at(struct Queue *q, int shortest){
 	q->size--;
 	printf("\nDequeueing from %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,node->sequence, node->clientfd, node->remainingBytes);
 	return node;
-/*	while(temp->remainingBytes != shortest || temp == NULL){*/
-/*		//printf("\nCurr val: %d\tComparing: %d\n",temp->clientfd,clientfd);*/
-/*		temp = temp->next;		*/
-/*		*/
-/*	}*/
-/*	*/
-
- 	
-/* 	if(temp->next == NULL && temp->remainingBytes == shortest){*/
-/* 		q->tail == NULL;*/
-/* 		return temp; 		*/
-/* 	}*/
-/* 		*/
-/* 	struct RCB *next = temp->next->next;*/
-/* 	node = temp->next;*/
-/* 	//free(temp->next);*/
-/* 	temp->next = next;*/
-/* 	q->size--;*/
-/* 	return node;	*/
 }
 
 void enqueueSJF(void){
 	struct RCB* rcb;
-	//int clientfd;
-	//int position = 0;	
 		
 	if(WorkQueue->head != NULL)
 		rcb = WorkQueue->head;
@@ -250,12 +233,81 @@ void enqueueSJF(void){
 	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
 }
 
+int processSJF(struct RCB* rcb){
+	static char *buffer; 
+	
+	buffer = malloc(MAX_HTTP_SIZE);
+	int len;
+	
+	do {                                          /* loop, read & send file */
+		len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
+		
+		if( len < 0 ) {                             /* check for errors */
+			perror( "Error while writing to client" );
+		} 
+		else if( len > 0 ){                      /* if none, send chunk */
+			len = write( rcb->clientfd, buffer, len );
+			
+			if( len < 1 ) {                           /* check for errors */
+				perror( "Error while writing to client" );
+			}
+		}	
+	} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+	
+	fclose(rcb->file);
+	close(rcb->clientfd);
+	free(buffer);
+	return 1;	
+}
+
 void enqueueRR(void){
 	while(WorkQueue->size!=0){
 		enqueue(RR,dequeue(WorkQueue));
 	}
 }
 
+void *thread_SJF(void *name){
+	printf("\nI am thread %d.\n",name);
+	fflush(stdout);
+	while(1){
+		
+		printQueue(SJF);
+		
+		while(WorkQueue->head != NULL){
+			pthread_mutex_lock(&enqueue_m);
+			//printf("\n\tHey I'm putting shit into SJF queue.\n");
+			enqueueSJF();
+			
+			pthread_mutex_unlock(&enqueue_m);			
+		}
+		printf("\nMoving to next while on thread %d\n",name);
+		fflush(stdout);
+		while(SJF->head != NULL){
+			pthread_mutex_lock(&enqueue_m);
+			
+			printf("\n\tHey I'm working on stuff from SJF queue.\n");
+			fflush(stdout);
+			
+			processSJF(dequeue(SJF));
+			
+			pthread_mutex_unlock(&enqueue_m);
+		}
+		
+		printf("\nWaiting for work.\n");
+		fflush(stdout);
+		pthread_cond_wait(&sig_no_work,&signal);
+				
+	}
+	pthread_exit(NULL);
+}
+
+/*void *thread_RR(void *name){*/
+
+/*}*/
+
+/*void *thread_MLFQ(void *name){*/
+
+/*}*/
 
 
 /* This function is where the program starts running.
@@ -272,6 +324,7 @@ int main( int argc, char **argv ) {
   int port = -1;                                    /* server port # */
   int fd;                                           /* client file descriptor */
 	init();
+	setbuf(stdout, NULL);
 	
 	
   /* check for and process parameters 
@@ -281,8 +334,13 @@ int main( int argc, char **argv ) {
     return 0;
   }
 
-  network_init( port );                             /* init network module */
-
+ 	network_init( port );                             /* init network module */
+	pthread_mutex_init(&enqueue_m, NULL);
+	pthread_mutex_init(&process_m, NULL);
+	pthread_mutex_init(&signal, NULL);
+	
+	pthread_t threads[NUM_THREADS];
+	
   for( ;; ) {                                       /* main loop */
     printf("\nWaiting\n");
     network_wait();                                 /* wait for clients */
@@ -297,20 +355,23 @@ int main( int argc, char **argv ) {
     puts("\n");
 /*    while(WorkQueue->size!=0)*/
 /*      dequeue(WorkQueue);*/
-    if(strcmp(argv[2],"SJF") == 0)
-    	while(WorkQueue->size != 0)
-    		enqueueSJF();
-    	printQueue(WorkQueue);
-    	puts("\n");
-    	printQueue(SJF);
+    
+    
+    for(int i = 0; i < NUM_THREADS; i++){
+		if(pthread_create(&threads[i],NULL,thread_SJF,(void*)i) != 0){
+			printf("\nError creating thread %d\n", i);
+			return 1;		
+		}
+	}
+	
+	for(int i = 0; i < NUM_THREADS; i++){
+		pthread_join(threads[i],NULL);
+	} 
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
-/*    		enqueueSJF();*/
-/*    		break;*/
-/*    	case "RR":*/
-/*    		enqueueRR();*/
-/*    		break;*/
-/*    	default:*/
+/*    		*/
+/*			break;*/
+/*		default:*/
 /*    }*/
   }
 }
