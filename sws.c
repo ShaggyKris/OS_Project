@@ -113,12 +113,14 @@ static void serve_client( int fd ) {
 */
 
 int globalI=0;
+int isSorted=0;
 
 int runSJF(){
 	//sort the array of RCB 
 	RCB *shortest;
 	int i,j=0;
-
+	//if not sorted by previous threads
+	if(isSorted==0){
 	//insertion sort 
 	    for (i=1;i<globalCounter;i++){
 	    	shortest=rcbTable[i];
@@ -127,8 +129,8 @@ int runSJF(){
 	    	}
 	    	rcbTable[j]=shortest;
 	    }
-	
-
+	}
+	isSorted=1;
 	
     i=0;
 	//process request
@@ -208,6 +210,8 @@ int procRR(RCB* element){
 	int len;
 	buffer = malloc( MAX_HTTP_SIZE );
 	int end=0;
+	if(element==NULL)
+		return 0;
 	if(element->notFin==1)
 		return 1;
 
@@ -233,7 +237,7 @@ int procRR(RCB* element){
  }
  printf("REQUEST %d SENT BACK TO QUEUE(RR) Rem %d\n",element->seq,element->remainingB);
  		fflush(stdout);
-  
+  free(buffer);
   return 0;
 }
 
@@ -274,6 +278,8 @@ RCB* proc8KB(RCB *element){
 	buffer = malloc( MAX_HTTP_SIZE );
 	int i=0;	     
 	
+	if(element==NULL)
+		return NULL;
 
     	len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
     	if( len < 0 ) {                             /* check for errors */
@@ -297,7 +303,7 @@ RCB* proc8KB(RCB *element){
  		}
    	 printf("REQUEST %d WAS ONCE IN 8KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
  fflush(stdout);
-
+	free(buffer);
  return element;
 }
 
@@ -307,7 +313,10 @@ RCB* proc64KB(RCB *element){
 	buffer = malloc( MAX_HTTP_SIZE );
 	int end=0;
 	int i;
-	     
+	
+	if(element==NULL)
+		return NULL;
+		
 	for(i=0;i<8;i++){
     len = fread( buffer, 1, MAX_HTTP_SIZE, element->file );  /* read file chunk */
     if( len < 0 ) {                             /* check for errors */
@@ -334,48 +343,67 @@ RCB* proc64KB(RCB *element){
  }
  printf("REQUEST %d WAS ONCE IN 64KB QUEUE Remaining Bytes: %d\n",element->seq,element->remainingB);
  fflush(stdout);
+ 	free(buffer);
  return element;
 }
 
+int end=0;
+int elements64=0;
+int remElements=0;
+RCB *KB64[64];
+RCB *Remainder[64];
+int secCount=0;
 
 int runMLFB(){
 	//Run in arrival order until it goes over the quantum
 
 	int i=0;
-	int end=0;
-	int elements64=0;
-	int remElements=0;
-	RCB *KB64[64];
-	RCB *Remainder[64];
 	RCB *element;
 	//loop through the array of table until all process finishes 
 	
-	for (i=0;i<globalCounter;i++){
-		element=proc8KB(rcbTable[i]);
+	while(globalI<globalCounter){
+		pthread_mutex_lock(&thread_lock);
+		element=proc8KB(rcbTable[globalI]);
+		if(element==NULL)
+			continue;
 		if(element->notFin==0){
 			KB64[elements64]=element;
 			elements64++;
 		}
+		globalI++;
+		pthread_mutex_unlock(&thread_lock);
 	}
+	
+	
 	//for 64kb elements
-	for (i=0;i<elements64;i++){
-		element=proc64KB(KB64[i]);
+	while(secCount<elements64){
+		pthread_mutex_lock(&thread_lock);
+		element=proc64KB(KB64[secCount]);
+		if(element==NULL)
+			continue;
 		if(element->notFin==0){
 			Remainder[remElements]=element;
 			remElements++;
 		}
+		secCount++;
+		pthread_mutex_unlock(&thread_lock);
+		
 	}
+
 	//for the rest 
 	do{
 	  for (i=0;i<remElements;i++){
 		//process request if it is not completed yet 
-		if(Remainder[i]->notFin==0)
+		if(Remainder[i]->notFin==0){
+			pthread_mutex_lock(&thread_lock);
 			end+=procRR(Remainder[i]);
+			pthread_mutex_unlock(&thread_lock);
+		}
 	  }
 	}while(end<remElements);
 	
 	
-	globalCounter=0;
+
 
 	return 0;
 }
@@ -429,9 +457,10 @@ int main( int argc, char **argv ) {
    	runMLFB();*/
    	for(int i=0;i<4;i++){
 		pthread_join(worker[i],NULL);
-
 	}
+	globalCounter=0;
 	globalI=0;
+	isSorted=0;
 
   }
  }
