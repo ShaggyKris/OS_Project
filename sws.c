@@ -269,41 +269,43 @@ void enqueueRR(void){
 void *thread_SJF(void *name){
 	printf("\nI am thread %d.\n",name);
 	fflush(stdout);
+	//struct RCB* rcb;
 	
 	while(1){
 		
 		printQueue(SJF);
 		
+		printf("\nWaiting for work.\n");
+		fflush(stdout);	
+		pthread_cond_wait(&sig_no_work,&signal);
+		
 		while(WorkQueue->head != NULL){
 			pthread_mutex_lock(&enqueue_m);
 			//printf("\n\tHey I'm putting shit into SJF queue.\n");
+			if(WorkQueue->head == NULL){
+				pthread_mutex_lock(&enqueue_m);
+				break;
+			}
+			
 			enqueueSJF();
 			
 			pthread_mutex_unlock(&enqueue_m);			
-		}
-		printf("\nMoving to next while on thread %d\n",name);
-		fflush(stdout);
-		
-		if(SJF->head != NULL){
+		}					
+		while(SJF->head != NULL){
+			
 			pthread_mutex_lock(&enqueue_m);
-			while(SJF->head != NULL){
-				
-			
-				printf("\n\tHey I'm working on stuff from SJF queue.\n");
-				fflush(stdout);
-			
-				processSJF(dequeue(SJF));
-			
-				
+			if(SJF->head == NULL){
+				pthread_mutex_unlock(&enqueue_m);
+				break;
 			}
-			pthread_mutex_unlock(&enqueue_m);
-		}
-		
-		printf("\nWaiting for work.\n");
-		fflush(stdout);
-		pthread_cond_wait(&sig_no_work,&signal);
-				
+			printf("\n\tHey, Thread %d working on stuff from SJF queue.\n",name);
+			fflush(stdout);			
+			
+			processSJF(dequeue(SJF));
+			pthread_mutex_unlock(&enqueue_m);			
+		}							
 	}
+	
 	pthread_exit(NULL);
 }
 
@@ -347,37 +349,35 @@ int main( int argc, char **argv ) {
 	
 	pthread_t threads[NUM_THREADS];
 	
-  for( ;; ) {                                       /* main loop */
-    printf("\nWaiting\n");
-    network_wait();                                 /* wait for clients */
-	
-	
-	
-    for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
-      serve_client( fd ); 
-      fflush(stdout);                          /* process each client */
-    }
-    printQueue(WorkQueue);
-    puts("\n");
-/*    while(WorkQueue->size!=0)*/
-/*      dequeue(WorkQueue);*/
-    
-    
-    for(int i = 0; i < NUM_THREADS; i++){
+	for(int i = 0; i < NUM_THREADS; i++){
 		if(pthread_create(&threads[i],NULL,thread_SJF,(void*)i) != 0){
 			printf("\nError creating thread %d\n", i);
 			return 1;		
 		}
 	}
+	for( ;; ) {                                       /* main loop */
+		printf("\nWaiting\n");
+		network_wait();                                /* wait for clients */
 	
-	for(int i = 0; i < NUM_THREADS; i++){
-		pthread_join(threads[i],NULL);
-	} 
+		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
+		  serve_client( fd ); 
+		  fflush(stdout);                          /* process each client */
+		}
+		
+		printQueue(WorkQueue);
+		puts("\n");
+	/*    while(WorkQueue->size!=0)*/
+	/*      dequeue(WorkQueue);*/		
+		pthread_cond_signal(&sig_no_work);	
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
 /*    		*/
 /*			break;*/
 /*		default:*/
 /*    }*/
-  }
+	}
+	for(int i = 0; i < NUM_THREADS; i++){
+		pthread_join(threads[i],NULL);
+	}
+  	
 }
