@@ -269,6 +269,7 @@ void enqueueRR(void){
 void *thread_SJF(void *name){
 	printf("\nI am thread %d.\n",name);
 	fflush(stdout);
+	
 	while(1){
 		
 		printQueue(SJF);
@@ -282,14 +283,19 @@ void *thread_SJF(void *name){
 		}
 		printf("\nMoving to next while on thread %d\n",name);
 		fflush(stdout);
-		while(SJF->head != NULL){
+		
+		if(SJF->head != NULL){
 			pthread_mutex_lock(&enqueue_m);
+			while(SJF->head != NULL){
+				
 			
-			printf("\n\tHey I'm working on stuff from SJF queue.\n");
-			fflush(stdout);
+				printf("\n\tHey I'm working on stuff from SJF queue.\n");
+				fflush(stdout);
 			
-			processSJF(dequeue(SJF));
+				processSJF(dequeue(SJF));
 			
+				
+			}
 			pthread_mutex_unlock(&enqueue_m);
 		}
 		
