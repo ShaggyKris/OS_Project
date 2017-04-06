@@ -19,6 +19,8 @@
 struct Queue *WorkQueue;
 struct Queue *SJF;
 struct Queue *RR;
+struct Queue *First_P;
+struct Queue *Second_P;
 
 pthread_mutex_t signal, enqueue_m, process_m;
 pthread_cond_t sig_no_work = PTHREAD_COND_INITIALIZER;
@@ -50,10 +52,14 @@ void init(void){
 	WorkQueue = (struct Queue*)malloc(sizeof(struct Queue));
 	SJF = (struct Queue*)malloc(sizeof(struct Queue));
 	RR = (struct Queue*)malloc(sizeof(struct Queue));
+	First_P=(struct Queue*)malloc(sizeof(struct Queue));
+	Second_P=(struct Queue*)malloc(sizeof(struct Queue));
 	global_counter = 0;
 	WorkQueue->name = "WorkQueue";
 	SJF->name = "SJF";
 	RR->name="RR";
+	First_P->name="8KB queue";
+	Second_P->name="64KB queue";
 } 
  
 static void serve_client( int fd ) {
@@ -149,6 +155,9 @@ static void serve_client( int fd ) {
 //ENSURE MUTEX WHEN CALLING THIS
 void enqueue(struct Queue *q, struct RCB *rcb)
 {
+	if(rcb==NULL){
+		return;
+	}
 	rcb->next = NULL;
 	if(q->head == NULL)
 	{
@@ -172,8 +181,8 @@ struct RCB* dequeue(struct Queue *q){
 	struct RCB *rcb = q->head;
 	
 	if(q->head == NULL){
-		printf("\nERROR YOU SUCK\n");
-		exit(0);
+		//printf("\nERROR YOU SUCK\n");
+		return;
 	}
 	
 	if(q->head == q->tail){ 
@@ -191,7 +200,7 @@ struct RCB* dequeue(struct Queue *q){
 struct RCB* dequeue_at(struct Queue *q, int shortest){
 	
 	if(q->head == NULL){
-		return NULL;
+		return;
 	}
 /*	if(q->head->next == NULL)*/
 /*		return dequeue(q);*/
@@ -303,6 +312,7 @@ void processRR(struct RCB *rcb){
 		fclose(rcb->file);
 		close(rcb->clientfd);
 		free(buffer);
+		free(rcb);
 	}else
 		enqueue(RR,rcb);
 	
@@ -311,14 +321,14 @@ void processRR(struct RCB *rcb){
 
 void *thread_RR(void *name){
 
-		pthread_mutex_lock(&signal);
+
 		printf("\nI am thread %d.\n",name);
 		fflush(stdout);
 		pthread_mutex_lock(&signal);
 		while(1){
 			struct RCB *rcb;
 			//if there is stuff in work queue
-			if(pthread_mutex_trylock(&enqueue_m)==0){
+			if((pthread_mutex_trylock(&enqueue_m))==0){
 				if(WorkQueue->head!=NULL)
 					enqueueRR();
 				   pthread_mutex_unlock(&enqueue_m);
@@ -338,6 +348,138 @@ void *thread_RR(void *name){
 	}
 	
 	
+}
+
+void enqueue_8KB(void){
+	while(WorkQueue->size!=0){
+		enqueue(First_P,dequeue(WorkQueue));
+	}
+}
+	
+void process_8KB(struct RCB *rcb){
+	if(rcb==NULL)
+		return;
+	
+	static char *buffer; 
+	
+	buffer = malloc(MAX_HTTP_SIZE);
+	int len;
+	
+	len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
+		
+	if( len < 0 ) {                             /* check for errors */
+		perror( "Error while writing to client" );
+	} 
+	else if( len > 0 ){                      /* if none, send chunk */
+		len = write( rcb->clientfd, buffer, len );
+		rcb->remainingBytes=rcb->remainingBytes-len;
+		if( len < 1 ) {                           /* check for errors */
+			perror( "Error while writing to client" );
+		}
+	}	
+	
+	if(rcb->remainingBytes<=0){
+		fclose(rcb->file);
+		close(rcb->clientfd);
+		free(buffer);
+		free(rcb);
+	}else
+		enqueue(Second_P,rcb);
+	
+	return 1;
+	
+}
+
+void process_64KB(struct RCB *rcb){
+	if(rcb==NULL)
+		return;
+	
+	static char *buffer; 
+	
+	buffer = malloc(MAX_HTTP_SIZE);
+	int len;
+	int i;
+	
+
+		
+	for(i=0;i<8;i++){
+   	 len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
+    	if( len < 0 ) {                             /* check for errors */
+         perror( "Error while writing to client" );
+    } else if( len > 0 ) {                      /* if none, send chunk */
+ 	     len = write( rcb->clientfd, buffer, len );
+      
+      rcb->remainingBytes=rcb->remainingBytes-len;
+      if( len < 1 ) {                           /* check for errors */
+        perror( "Error while writing to client" );
+      }
+    }
+    }
+	
+	if(rcb->remainingBytes<=0){
+		fclose(rcb->file);
+		close(rcb->clientfd);
+		free(buffer);
+		free(rcb);
+	}else
+		enqueue(RR,rcb);
+	
+	return 1;
+	
+}
+
+void *thread_MLFB(void *name){
+	//lock himself until main wake
+	printf("\nI am thread %d.\n",name);
+	fflush(stdout);
+	//waiting for main to wake him up 
+	pthread_mutex_lock(&signal);
+	//infinite loop processing MLFB 
+	while(1){
+		//as long as there is stuff in WorkQueue, enqueue to the first queue
+		if((pthread_mutex_trylock(&enqueue_m))==0){
+			while(WorkQueue->head!=NULL){
+				enqueue_8KB();
+				pthread_mutex_unlock(&enqueue_m);
+			}
+		}
+		pthread_mutex_unlock(&enqueue_m);
+
+			if(First_P->head!=NULL){
+				pthread_mutex_lock(&process_m);
+				struct RCB *rcb=dequeue(First_P);
+				//process first 8KB
+				if(rcb!=NULL){
+					printf("THREAD %d is working in 8KB queue\n",name);
+					fflush(stdout);
+					process_8KB(rcb);
+				}
+				pthread_mutex_unlock(&process_m);
+			}
+			else if(Second_P->head!=NULL){
+				pthread_mutex_lock(&process_m);
+				struct RCB *rcb=dequeue(Second_P);
+				if(rcb!=NULL){
+					printf("THREAD %d is working in 8KB queue\n",name);
+					fflush(stdout);
+					process_64KB(rcb);
+				}
+				pthread_mutex_unlock(&process_m);
+			}
+			else if(RR->head!=NULL){
+				pthread_mutex_lock(&process_m);
+				struct RCB *rcb=dequeue(RR);
+				if(rcb!=NULL){
+					printf("THREAD %d is working in 8KB queue\n",name);
+					fflush(stdout);
+					processRR(rcb);
+				}
+				pthread_mutex_unlock(&process_m);
+			}else{
+				pthread_mutex_unlock(&process_m);
+			}
+	}
+
 }
 		
 		
@@ -465,12 +607,21 @@ int main( int argc, char **argv ) {
 			}
 		}
 		else if(strcmp(argv[2],"RR")==0){
+			if(i==0)
+				pthread_mutex_lock(&signal);
 			if(pthread_create(&threads[i],NULL,thread_RR,(void*)i) != 0){
 			printf("\nError creating thread %d\n", i);
 			return 1;
 			}
 		}
-		
+		else{
+			if(i==0)
+				pthread_mutex_lock(&signal);
+			if(pthread_create(&threads[i],NULL,thread_MLFB,(void*)i) != 0){
+			printf("\nError creating thread %d\n", i);
+			return 1;
+			}
+		}
 	}
 	
 	for( ;; ) {                                       /* main loop */
@@ -481,7 +632,7 @@ int main( int argc, char **argv ) {
 		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
 		  serve_client( fd ); 
 		  pthread_mutex_unlock(&signal);
-		  fflush(stdout);                          /* process each client */
+
 		}
 
 		
