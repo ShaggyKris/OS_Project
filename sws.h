@@ -23,8 +23,6 @@ struct Queue{
 };
 
 void init(void);
-
-
 static void serve_client(int fd);
 void enqueue(struct Queue *q, struct RCB *rcb);
 struct RCB* dequeue(struct Queue *q);
@@ -32,4 +30,7 @@ struct RCB* dequeue_at(struct Queue *q, int position);
 void printQueue(struct Queue *q);
 void enqueueSJF(void);
 void enqueueRR(void);
-
+void *thread_SJF();
+void *thread_RR();
+void *thread_MLFB();
+int processSJF(struct RCB *rcb);
