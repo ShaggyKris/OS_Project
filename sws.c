@@ -160,7 +160,7 @@ void enqueue(struct Queue *q, struct RCB *rcb)
 		//printf("\nEnqueueing to tail in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}
 	fflush(stdout);	
-    //printQueue(q);
+    printQueue(q);
 	return;
 }
 
@@ -182,6 +182,31 @@ struct RCB* dequeue(struct Queue *q){
 	//printf("\nDequeueing from %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
 	q->size--;
 	return rcb;
+}
+
+void enqueue_at(struct Queue *q, struct RCB *rcb){
+	if(rcb == NULL)
+		return;
+	if(q->head == NULL){
+		printf("\nEnqueueing head.\n");
+		enqueue(q,rcb);
+	}
+	else{
+		struct RCB* temp = q->head;
+		while(temp != NULL && temp->next != NULL){
+			if(temp->next->remainingBytes > rcb->remainingBytes && temp->remainingBytes <= rcb->remainingBytes){
+				rcb->next = temp->next;
+				temp->next = rcb;
+				printf("\nEnqueueing mid.\n");
+				printQueue(q);
+				return;
+			}
+		}
+		q->tail->next = rcb;
+		q->tail = rcb;
+		printf("\nEnqueueing tail.\n");
+		printQueue(q);
+	}
 }
 
 struct RCB* dequeue_at(struct Queue *q, int shortest){
@@ -234,7 +259,10 @@ void enqueueSJF(void){
 		rcb = rcb->next;
 	}
 	
-	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
+/*	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	*/
+
+	enqueue_at(SJF, dequeue_at(WorkQueue, shortest) );
+	
 }
 //processing shortest job first 
 void processSJF(struct RCB* rcb){

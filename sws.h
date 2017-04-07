@@ -42,7 +42,7 @@ void printQueue(struct Queue *q){
 	}
 	struct RCB* rcb = q->head;
 	while(rcb!=NULL){
-		printf("\nQueue %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+		printf("\n\nQueue %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
 		fflush(stdout);
 		rcb = rcb->next;
 	}
