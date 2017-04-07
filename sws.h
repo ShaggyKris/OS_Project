@@ -33,4 +33,17 @@ void enqueueRR(void);
 void *thread_SJF();
 void *thread_RR();
 void *thread_MLFB();
-int processSJF(struct RCB *rcb);
+void processSJF(struct RCB *rcb);
+
+void printQueue(struct Queue *q){
+	if(q->head == NULL){
+		printf("\nThere are no items in this list!\n");
+		fflush(stdout);
+	}
+	struct RCB* rcb = q->head;
+	while(rcb!=NULL){
+		printf("\nQueue %s\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,rcb->sequence, rcb->clientfd, rcb->remainingBytes);
+		fflush(stdout);
+		rcb = rcb->next;
+	}
+}

@@ -160,7 +160,7 @@ void enqueue(struct Queue *q, struct RCB *rcb)
 		//printf("\nEnqueueing to tail in %s Sequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",q->name,q->tail->sequence, q->tail->clientfd, q->tail->remainingBytes);
 	}
 	fflush(stdout);	
-    
+    //printQueue(q);
 	return;
 }
 
@@ -237,7 +237,7 @@ void enqueueSJF(void){
 	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
 }
 //processing shortest job first 
-int processSJF(struct RCB* rcb){
+void processSJF(struct RCB* rcb){
 	if(rcb==NULL)
 		return;
 	//for writing file name 
@@ -278,9 +278,9 @@ int processSJF(struct RCB* rcb){
 	fclose(rcb->file);
 	close(rcb->clientfd);
 	free(buffer);
-	return 1;	
+	return;	
 }
-
+//Enqueues everything from the WorkQueue into the 
 void enqueueRR(void){
 	while(WorkQueue->size!=0){
 		enqueue(RR,dequeue(WorkQueue));
@@ -331,7 +331,7 @@ void processRR(struct RCB *rcb){
 	}else
 		enqueue(RR,rcb);
 	
-	return 1;
+	return;
 }
 /*
 *This is function for threads to execute if RR is selected
@@ -417,7 +417,7 @@ void process_8KB(struct RCB *rcb){
 	}else
 		enqueue(Second_P,rcb);
 	
-	return 1;
+	return;
 	
 }
 //for processign 64KB queue
@@ -468,7 +468,7 @@ void process_64KB(struct RCB *rcb){
 	}else
 		enqueue(RR,rcb);
 	
-	return 1;
+	return;
 	
 }
 /*
@@ -531,6 +531,8 @@ void *thread_SJF(void *name){
 	
 	while(1){
 		
+		if(WorkQueue->head != NULL)
+			pthread_mutex_unlock(&signal);
 
 		if(pthread_mutex_trylock(&enqueue_m)==0){
 			if(WorkQueue->head != NULL){
@@ -540,7 +542,7 @@ void *thread_SJF(void *name){
 			}	
 		}
 		pthread_mutex_unlock(&enqueue_m);					
-
+		//printQueue(SJF);
 		if(SJF->head != NULL){
 			pthread_mutex_lock(&process_m);
 			rcb=dequeue(SJF);
@@ -550,7 +552,10 @@ void *thread_SJF(void *name){
 		}
 		
 
-
+		if(SJF->head == NULL && WorkQueue->head == NULL){
+			//printf("\nThead %d waiting for work.\n",name);
+			pthread_mutex_lock(&signal);			
+		}
 
 		
 	}

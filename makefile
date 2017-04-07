@@ -1,6 +1,6 @@
 # Targets & general dependencies
 PROGRAM = sws
-HEADERS = network.h
+HEADERS = network.h sws.h
 OBJS = network.o sws.o
 ADD_OBJS = 
 
