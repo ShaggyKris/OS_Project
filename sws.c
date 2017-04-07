@@ -14,14 +14,14 @@
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 #define TIME_QUANTUM 4096					//Length of time for Round Robin CPU time
-#define NUM_THREADS 3
+#define NUM_THREADS 100
 
 struct Queue *WorkQueue;
 struct Queue *SJF;
 struct Queue *RR;
 
 pthread_mutex_t signal, enqueue_m, process_m;
-pthread_cond_t sig_no_work = PTHREAD_COND_INITIALIZER;
+pthread_cond_t sig_work = PTHREAD_COND_INITIALIZER;
 
 int global_counter;
 //int RCB_elements = 0;
@@ -131,7 +131,7 @@ static void serve_client( int fd ) {
       
       enqueue(WorkQueue,rcb);
       //pthread_cond_broadcast(&sig_no_work);
-      
+      //pthread_cond_signal(&sig_no_work);
       //fclose( fin );
     }
   }
@@ -172,8 +172,7 @@ struct RCB* dequeue(struct Queue *q){
 	struct RCB *rcb = q->head;
 	
 	if(q->head == NULL){
-		printf("\nERROR YOU SUCK\n");
-		exit(0);
+		return NULL;
 	}
 	
 	if(q->head == q->tail){ 
@@ -279,70 +278,49 @@ void enqueueRR(void){
 void *thread_SJF(void *name){
 	printf("\nI am thread %d.\n",name);
 	fflush(stdout);
-	//struct RCB* rcb;
+	struct RCB* rcb;
+	
+	pthread_mutex_lock(&signal);
 	
 	while(1){
 		printf("\nThread %d printing Work Queue.\n",name);
 		fflush(stdout);
 		printQueue(WorkQueue);		
 		
-		//pthread_mutex_lock(&signal);
-		printf("\n\n\tThread %d has locked the Wait loop.\n\n",name);
+		if(WorkQueue->head != NULL)
+			pthread_mutex_unlock(&signal);
+				
+		printf("\n\nThread %d has locked the Work Queue.\n\n",name);
+		if(pthread_mutex_trylock(&enqueue_m)==0){
+			if(WorkQueue->head != NULL){			
+				printf("\n\n\tHey, Thread %d enqueuing on stuff in SJF queue.\n\n",name);
+				fflush(stdout);
 		
-		while(WorkQueue->head == NULL){
-/*			printf("\nThread %d waiting for work.\n",name);*/
-/*			fflush(stdout);			*/
-/*			pthread_cond_wait(&sig_no_work,&signal);*/
-		}
-		
-		//pthread_mutex_unlock(&signal);
-		printf("\n\n\tThread %d has unlocked the Wait loop.\n\n",name);
-		
-		pthread_mutex_lock(&enqueue_m);
-		printf("\n\n\tThread %d has locked the Work Queue.\n\n",name);
-		if(WorkQueue->head != NULL){
-			//printf("\nThread %d has entered WorkQueue loop.\n",name);
-/*			if(pthread_mutex_trylock(&enqueue_m)){*/
-/*				//printf("\nThread %d has locked the Work Queue.\n");*/
-/*				continue;*/
-/*			}*/
+				enqueueSJF();
+				pthread_mutex_unlock(&enqueue_m);						
+			}
+		}		
+		pthread_mutex_unlock(&enqueue_m);	
+								
+		printf("\n\nThread %d has unlocked the Work Queue.\n\n",name);
+		fflush(stdout);		
 			
-/*			if(WorkQueue->head == NULL){*/
-/*				pthread_mutex_unlock(&enqueue_m);*/
-/*				break;*/
-/*			}*/
-			printf("\n\n\tHey, Thread %d enqueuing on stuff in SJF queue.\n\n",name);
-			fflush(stdout);
-			
-			enqueueSJF();
-						
-						
-		}	
-		pthread_mutex_unlock(&enqueue_m);					
-		printf("\n\n\tThread %d has unlocked the Work Queue.\n\n",name);
-		
-		pthread_mutex_lock(&process_m);
-		printf("\n\n\tThread %d has locked the SJF Queue.\n\n",name);
-		if(SJF->head != NULL){
-			//printf("\nThread %d has entered SJF loop.\n",name);
-/*			if(pthread_mutex_trylock(&process_m)){*/
-/*				//printf("\nThread %d has locked the SJF Queue.\n");*/
-/*				continue;*/
-/*			}*/
-/*			*/
-/*			if(SJF->head == NULL){*/
-/*				pthread_mutex_unlock(&process_m);*/
-/*				break;*/
-/*			}*/			
+		if(SJF->head != NULL){		
+			pthread_mutex_lock(&process_m);
+			printf("\n\nThread %d has locked the SJF Queue.\n\n",name);
 			printf("\n\n\tHey, Thread %d working on stuff from SJF queue.\n\n",name);
-			fflush(stdout);			
-			
-			processSJF(dequeue(SJF));			
-/*			pthread_mutex_unlock(&process_m);	*/
-					
+			fflush(stdout);
+			rcb = dequeue(SJF);
+			if(rcb!=NULL)
+				processSJF(rcb);
+			pthread_mutex_unlock(&process_m);
+			printf("\n\nThread %d has unlocked the SJF Queue.\n\n",name);				
+		}		
+		if(SJF->head == NULL && WorkQueue->head == NULL){
+			printf("\nThead %d waiting for work.\n",name);
+			pthread_mutex_lock(&signal);			
 		}
-		pthread_mutex_unlock(&process_m);		
-		printf("\n\n\tThread %d has unlocked the SJF Queue.\n\n",name);							
+	
 	}
 	pthread_exit(NULL);
 }
@@ -377,6 +355,7 @@ int main( int argc, char **argv ) {
    */
   if( ( argc < 2 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ) {
     printf( "usage: sms <port>\n" );
+    fflush(stdout);
     return 0;
   }
 
@@ -389,27 +368,34 @@ int main( int argc, char **argv ) {
 	pthread_t threads[NUM_THREADS];
 	
 	for(int i = 0; i < NUM_THREADS; i++){
+		if(i==0)
+			pthread_mutex_lock(&signal);
 		if(pthread_create(&threads[i],NULL,thread_SJF,(void*)i) != 0){
 			printf("\nError creating thread %d\n", i);
+			fflush(stdout);
 			return 1;		
 		}
 	}
 	
 	for( ;; ) {                                       /* main loop */
 		printf("\nWaiting\n");
-		
+		fflush(stdout);
 		network_wait();                                /* wait for clients */
 		
 		for( fd = network_open(); fd >= 0; fd = network_open() ) { /* get clients */
 		  serve_client( fd ); 
-		  pthread_cond_broadcast(&sig_no_work);
+		  //pthread_cond_signal(&sig_work);
+		  pthread_mutex_unlock(&signal);
 		  fflush(stdout);                          /* process each client */
 		}
 		
 		printf("\nMain is about to print the work queue.\n");
 		fflush(stdout);
 		printQueue(WorkQueue);
-		puts("\n");		
+		puts("\n");
+		
+		
+		
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
 /*    		*/
