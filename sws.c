@@ -35,16 +35,7 @@ int global_counter;
  *             fd : the file descriptor to the client connection
  * Returns: None
  */
-void printQueue(struct Queue *q){
-	if(q->head == NULL){
-		printf("\nThere are no items in this list!\n");
-		fflush(stdout);
-	}
-	struct RCB* rcb = q->head;
-	while(rcb!=NULL){
-		rcb = rcb->next;
-	}
-}
+
 void init(void){
 	WorkQueue = (struct Queue*)malloc(sizeof(struct Queue));
 	SJF = (struct Queue*)malloc(sizeof(struct Queue));
@@ -535,8 +526,6 @@ pthread_exit(0);
 */		
 
 void *thread_SJF(void *name){
-	printf("\nI am thread %d.\n",name);
-	fflush(stdout);
 	struct RCB *rcb;
 	pthread_mutex_lock(&signal);
 	
@@ -653,8 +642,6 @@ int main( int argc, char **argv ) {
 		}
 
 		
-		printQueue(WorkQueue);
-		puts("\n");
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
 /*    		*/
