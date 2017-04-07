@@ -11,6 +11,7 @@
 
 #include "network.h"
 #include "sws.h"
+#include <unistd.h>
 
 #define MAX_HTTP_SIZE 8192                 /* size of buffer to allocate */
 
@@ -41,8 +42,6 @@ void printQueue(struct Queue *q){
 	}
 	struct RCB* rcb = q->head;
 	while(rcb!=NULL){
-		printf("\tSequence: %d\tClientFD: %d\tRemaining Bytes: %d\n",rcb->sequence, rcb->clientfd, rcb->remainingBytes);
-		fflush(stdout);
 		rcb = rcb->next;
 	}
 }
@@ -109,18 +108,6 @@ static void serve_client( int fd ) {
       len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
       write( fd, buffer, len );
 
-/*      do {                                          // loop, read & send file */
-/*        len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  // read file chunk */
-/*        if( len < 0 ) {                             // check for errors */
-/*            perror( "Error while writing to client" );*/
-/*        } else if( len > 0 ) {                      // if none, send chunk */
-/*          len = write( fd, buffer, len );*/
-/*          if( len < 1 ) {                           // check for errors */
-/*            perror( "Error while writing to client" );*/
-/*          }*/
-/*        }*/
-/*      } while( len == MAX_HTTP_SIZE );              // the last chunk < 8192 */
-      
       //Somewhere in here, add in RCB allocation and enqueueing
       fseek(fin, 0L, SEEK_END);
       int size = ftell(fin);
@@ -131,10 +118,18 @@ static void serve_client( int fd ) {
       rcb->quantum = 4028;
       rcb->file = fin;
       rcb->sequence = ++global_counter;
-      
-      printf("\nAbout to enqueue from serve_client\n");
+      //for writing file path
+      int MAXSIZE = 0xFFF;
+   	 char proclnk[0xFFF];
+   	 char filename[0xFFF];
+	 ssize_t leng;
+	 int fno;
+	 fno=fileno(rcb->file);
+	 sprintf(proclnk,"/proc/self/fd/%d",fno);
+     leng = readlink(proclnk, filename, MAXSIZE);
+     filename[leng]='\0';
+      printf("Request for file %s admitted\n",filename);
       fflush(stdout);
-      
       enqueue(WorkQueue,rcb);
       //pthread_cond_broadcast(&sig_no_work);
       
@@ -217,7 +212,6 @@ struct RCB* dequeue_at(struct Queue *q, int shortest){
 	
 	while(temp != NULL && temp->next!=NULL && temp->remainingBytes != shortest){
 		if(temp->next->remainingBytes == shortest){
-			//printf("\n
 			node = temp->next;
 			temp->next = temp->next->next;
 			break;			
@@ -249,17 +243,27 @@ void enqueueSJF(void){
 		rcb = rcb->next;
 	}
 	
-	printf("\nSmallest = %d\n",shortest);
 	enqueue(SJF, dequeue_at(WorkQueue, shortest) );	
 }
 //processing shortest job first 
 int processSJF(struct RCB* rcb){
+	if(rcb==NULL)
+		return;
+	//for writing file name 
 	static char *buffer; 
-	
-	
+	int MAXSIZE = 0xFFF;
+    char proclnk[0xFFF];
+    char filename[0xFFF];
+	ssize_t leng;
+	int fno;
+	fno=fileno(rcb->file);
+	sprintf(proclnk,"/proc/self/fd/%d",fno);
+    leng = readlink(proclnk, filename, MAXSIZE);
+    filename[leng]='\0';
 	
 	buffer = malloc(MAX_HTTP_SIZE);
 	int len;
+	
 	
 	do {                                          /* loop, read & send file */
 		len = fread( buffer, 1, MAX_HTTP_SIZE, rcb->file );  /* read file chunk */
@@ -269,13 +273,17 @@ int processSJF(struct RCB* rcb){
 		} 
 		else if( len > 0 ){                      /* if none, send chunk */
 			len = write( rcb->clientfd, buffer, len );
-			
+			printf("Sent %d bytes of file %s\n",len,filename);
+			fflush(stdout);
 			if( len < 1 ) {                           /* check for errors */
 				perror( "Error while writing to client" );
 			}
 		}	
 	} while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
+	//for showing file name 
 	
+	printf("Request for file %s completed\n",filename);
+	fflush(stdout);
 	fclose(rcb->file);
 	close(rcb->clientfd);
 	free(buffer);
@@ -292,7 +300,17 @@ void processRR(struct RCB *rcb){
 	
 	if(rcb==NULL)
 		return;
-	
+	//for writing file name 
+	int MAXSIZE = 0xFFF;
+    char proclnk[0xFFF];
+    char filename[0xFFF];
+	ssize_t leng;
+	int fno;
+	fno=fileno(rcb->file);
+	sprintf(proclnk,"/proc/self/fd/%d",fno);
+    leng = readlink(proclnk, filename, MAXSIZE);
+    filename[leng]='\0';
+    
 	static char *buffer; 
 	
 	buffer = malloc(MAX_HTTP_SIZE);
@@ -306,12 +324,16 @@ void processRR(struct RCB *rcb){
 	else if( len > 0 ){                      /* if none, send chunk */
 		len = write( rcb->clientfd, buffer, len );
 		rcb->remainingBytes=rcb->remainingBytes-len;
+		printf("Sent %d bytes of file %s\n",len,filename);
+		fflush(stdout);
 		if( len < 1 ) {                           /* check for errors */
 			perror( "Error while writing to client" );
 		}
 	}	
 	
 	if(rcb->remainingBytes<=0){
+		printf("Request for file %s completed\n",filename);
+		fflush(stdout);
 		fclose(rcb->file);
 		close(rcb->clientfd);
 		free(buffer);
@@ -326,8 +348,6 @@ void processRR(struct RCB *rcb){
 void *thread_RR(void *name){
 
 
-		printf("\nI am thread %d.\n",name);
-		fflush(stdout);
 		pthread_mutex_lock(&signal);
 		
 		while(1){
@@ -345,7 +365,6 @@ void *thread_RR(void *name){
 		
 				if(rcb!=NULL){
 					pthread_mutex_lock(&process_m);
-					printf("I AM THREAD %d, processing RR\n",name);
 					processRR(rcb);
 					pthread_mutex_unlock(&process_m);
 				}
@@ -365,6 +384,17 @@ void enqueue_8KB(void){
 void process_8KB(struct RCB *rcb){
 	if(rcb==NULL)
 		return;
+	//for writing file path
+	int MAXSIZE = 0xFFF;
+    char proclnk[0xFFF];
+    char filename[0xFFF];
+	ssize_t leng;
+	int fno;
+	fno=fileno(rcb->file);
+	sprintf(proclnk,"/proc/self/fd/%d",fno);
+    leng = readlink(proclnk, filename, MAXSIZE);
+    filename[leng]='\0';
+    
 	
 	static char *buffer; 
 	
@@ -378,13 +408,18 @@ void process_8KB(struct RCB *rcb){
 	} 
 	else if( len > 0 ){                      /* if none, send chunk */
 		len = write( rcb->clientfd, buffer, len );
+		printf("Sent %d bytes of file %s\n",len,filename);
+		fflush(stdout);
 		rcb->remainingBytes=rcb->remainingBytes-len;
+		
 		if( len < 1 ) {                           /* check for errors */
 			perror( "Error while writing to client" );
 		}
 	}	
 	
 	if(rcb->remainingBytes<=0){
+		printf("Request for file %s completed\n",filename);
+		fflush(stdout);
 		fclose(rcb->file);
 		close(rcb->clientfd);
 		free(buffer);
@@ -400,7 +435,16 @@ void process_64KB(struct RCB *rcb){
 		return;
 		
 
-	
+	//for writing file name
+	int MAXSIZE = 0xFFF;
+    char proclnk[0xFFF];
+    char filename[0xFFF];
+	ssize_t leng;
+	int fno;
+	fno=fileno(rcb->file);
+	sprintf(proclnk,"/proc/self/fd/%d",fno);
+    leng = readlink(proclnk, filename, MAXSIZE);
+    filename[leng]='\0';
 	static char *buffer; 
 	
 	buffer = malloc(MAX_HTTP_SIZE);
@@ -415,7 +459,8 @@ void process_64KB(struct RCB *rcb){
          perror( "Error while writing to client" );
     } else if( len > 0 ) {                      /* if none, send chunk */
  	     len = write( rcb->clientfd, buffer, len );
-      
+      	printf("Sent %d bytes of file %s\n",len,filename);
+		fflush(stdout);
       rcb->remainingBytes=rcb->remainingBytes-len;
       if( len < 1 ) {                           /* check for errors */
         perror( "Error while writing to client" );
@@ -424,6 +469,8 @@ void process_64KB(struct RCB *rcb){
     }
 	
 	if(rcb->remainingBytes<=0){
+		printf("Request for file %s completed\n",filename);
+		fflush(stdout);
 		fclose(rcb->file);
 		close(rcb->clientfd);
 		free(buffer);
@@ -438,8 +485,6 @@ void process_64KB(struct RCB *rcb){
 */		
 void *thread_MLFB(void *name){
 	//lock himself until main wake
-	printf("\nI am thread %d.\n",name);
-	fflush(stdout);
 	//waiting for main to wake him up 
 	pthread_mutex_lock(&signal);
 	//infinite loop processing MLFB 
@@ -458,8 +503,6 @@ void *thread_MLFB(void *name){
 				struct RCB *rcb=dequeue(First_P);
 				//process first 8KB
 				if(rcb!=NULL){
-					printf("THREAD %d is working in 8KB queue\n",name);
-					fflush(stdout);
 					process_8KB(rcb);
 				}
 				pthread_mutex_unlock(&process_m);
@@ -469,8 +512,6 @@ void *thread_MLFB(void *name){
 				pthread_mutex_lock(&first_m);
 				struct RCB *rcb=dequeue(Second_P);
 				if(rcb!=NULL){
-					printf("THREAD %d is working in 64KB queue\n",name);
-					fflush(stdout);
 					process_64KB(rcb);
 				}
 				pthread_mutex_unlock(&first_m);
@@ -480,8 +521,6 @@ void *thread_MLFB(void *name){
 				pthread_mutex_lock(&second_m);
 				struct RCB *rcb=dequeue(RR);
 				if(rcb!=NULL){
-					printf("THREAD %d is working in RR queue\n",name);
-					fflush(stdout);
 					processRR(rcb);
 				}
 				pthread_mutex_unlock(&second_m);
@@ -514,10 +553,7 @@ void *thread_SJF(void *name){
 		pthread_mutex_unlock(&enqueue_m);					
 
 		if(SJF->head != NULL){
-
 			pthread_mutex_lock(&process_m);
-			printf("\n\n\tHey, Thread %d working on stuff from SJF queue.\n\n",name);
-			fflush(stdout);			
 			rcb=dequeue(SJF);
 			if(rcb!=NULL)
 				processSJF(rcb);	
@@ -607,7 +643,6 @@ int main( int argc, char **argv ) {
 	}
 	
 	for( ;; ) {                                       /* main loop */
-		printf("\nWaiting\n");
 		
 		network_wait();                                /* wait for clients */
 		
@@ -618,11 +653,8 @@ int main( int argc, char **argv ) {
 		}
 
 		
-		printf("\nMain is about to print the work queue.\n");
-		fflush(stdout);
 		printQueue(WorkQueue);
 		puts("\n");
-		sin=1;
 /*    switch(argv[2]){*/
 /*    	case "SJF":*/
 /*    		*/
